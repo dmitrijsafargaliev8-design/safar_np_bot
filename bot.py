@@ -269,6 +269,42 @@ def health():
     )
 
 
+@app.get("/ready")
+def ready():
+    telegram_ok = False
+    nova_poshta_ok = False
+    sender_ok = False
+    errors = {}
+
+    if bot:
+        try:
+            telegram_ok = bool(bot.get_me().id)
+        except Exception as exc:
+            errors["telegram"] = str(exc)
+
+    if np_client:
+        try:
+            nova_poshta_ok = bool(np_client.ping())
+        except Exception as exc:
+            errors["nova_poshta"] = str(exc)
+
+        if nova_poshta_ok:
+            try:
+                np_client.get_sender_info()
+                sender_ok = True
+            except Exception as exc:
+                errors["sender"] = str(exc)
+
+    overall = telegram_ok and nova_poshta_ok and sender_ok
+    return jsonify(
+        status="ready" if overall else "not_ready",
+        telegram_ok=telegram_ok,
+        nova_poshta_ok=nova_poshta_ok,
+        sender_ok=sender_ok,
+        errors=errors,
+    ), (200 if overall else 503)
+
+
 @app.post("/webhook")
 def webhook():
     if not bot:
