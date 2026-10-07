@@ -130,17 +130,151 @@ def _canonical_key(raw: str) -> str:
     return aliases.get(key, key)
 
 
+PHONE_RE = re.compile(
+    r"(?<!\\d)(?:\\+?38[\\s().-]*)?0[\\s().-]*\\d(?:[\\s().-]*\\d){8}(?!\\d)"
+)
+WAREHOUSE_RE = re.compile(
+    r"(?i)\\b(?:нп|нова\\s*пошта|новая\\s*почта|отд(?:еление)?|відд(?:ілення)?)"
+    r"\\s*(?:№|#|n)?\\s*[:\\-]?\\s*(\\d{1,5})\\b"
+)
+COST_RE = re.compile(
+    r"(?i)\\b(?:оценка|оцінка|стоимость|вартість|объявленная\\s+стоимость|оголошена\\s+вартість)"
+    r"\\b\\s*[:\\-]?\\s*([\\d\\s.,]+)"
+)
+COD_RE = re.compile(
+    r"(?i)\\b(?:наложка|наложенный\\s+платеж|накладений\\s+платіж|післяплата|cod)"
+    r"\\b\\s*[:\\-]?\\s*([\\d\\s.,]+)"
+)
+
+
+def _clean_lines(text: str):
+    return [
+        re.sub(r"\\s+", " ", raw_line).strip()
+        for raw_line in (text or "").splitlines()
+        if raw_line.strip()
+    ]
+
+
 def parse_order(text: str):
+    raw_text = (text or "").strip()
+    if not raw_text:
+        raise ValueError("В сообщении нет текста заказа.")
+
     data = {}
-    for raw_line in (text or "").splitlines():
-        line = raw_line.strip()
-        if not line or ":" not in line:
+    lines = _clean_lines(raw_text)
+
+    # 1) Старый формат "Ключ: Значение" по-прежнему поддерживается.
+    for line in lines:
+        if ":" not in line:
             continue
         key, value = line.split(":", 1)
         key = _canonical_key(key)
         value = value.strip()
         if value:
             data[key] = value
+
+    # 2) Свободный формат из рабочей Telegram-группы:
+    # Одесса
+    # НП 142
+    # Погорельцева Наталья
+    # +380 95 947 7703
+    # Оценка 1600
+    if not data.get("phone"):
+        match = PHONE_RE.search(raw_text)
+        if match:
+            data["phone"] = match.group(0)
+
+    warehouse_line_index = None
+    for i, line in enumerate(lines):
+        match = WAREHOUSE_RE.search(line)
+        if not match:
+            continue
+        warehouse_line_index = i
+        if not data.get("warehouse"):
+            data["warehouse"] = match.group(1)
+
+        # Поддержка строки "Одесса НП 142".
+        city_prefix = line[:match.start()].strip(" ,;-")
+        if city_prefix and not data.get("city") and len(city_prefix) <= 80:
+            data["city"] = city_prefix
+        break
+
+    if not data.get("cost"):
+        match = COST_RE.search(raw_text)
+        if match:
+            data["cost"] = match.group(1).strip()
+
+    if not data.get("cod_amount"):
+        match = COD_RE.search(raw_text)
+        if match:
+            data["cod_amount"] = match.group(1).strip()
+
+    phone_line_index = None
+    for i, line in enumerate(lines):
+        if PHONE_RE.search(line):
+            phone_line_index = i
+            break
+
+    # Обычно город стоит строкой прямо перед "НП 142".
+    if not data.get("city") and warehouse_line_index is not None and warehouse_line_index > 0:
+        candidate = lines[warehouse_line_index - 1]
+        if (
+            ":" not in candidate
+            and not PHONE_RE.search(candidate)
+            and not WAREHOUSE_RE.search(candidate)
+            and not COST_RE.search(candidate)
+            and not COD_RE.search(candidate)
+        ):
+            data["city"] = candidate
+
+    # Обычно ФИО стоит прямо перед телефоном.
+    if not data.get("full_name") and phone_line_index is not None:
+        phone_line = lines[phone_line_index]
+        phone_match = PHONE_RE.search(phone_line)
+        same_line_prefix = (
+            phone_line[:phone_match.start()].strip(" ,;-:")
+            if phone_match
+            else ""
+        )
+
+        if (
+            same_line_prefix
+            and not WAREHOUSE_RE.search(same_line_prefix)
+            and not COST_RE.search(same_line_prefix)
+            and not COD_RE.search(same_line_prefix)
+        ):
+            data["full_name"] = same_line_prefix
+        else:
+            for j in range(phone_line_index - 1, -1, -1):
+                candidate = lines[j].strip()
+                if not candidate:
+                    continue
+                if j == warehouse_line_index:
+                    continue
+                if candidate == data.get("city"):
+                    continue
+                if (
+                    PHONE_RE.search(candidate)
+                    or WAREHOUSE_RE.search(candidate)
+                    or COST_RE.search(candidate)
+                    or COD_RE.search(candidate)
+                ):
+                    continue
+                if ":" in candidate:
+                    candidate_key = _canonical_key(candidate.split(":", 1)[0])
+                    if candidate_key in {
+                        "phone",
+                        "city",
+                        "warehouse",
+                        "cost",
+                        "cod_amount",
+                        "weight",
+                        "description",
+                    }:
+                        continue
+                if re.search(r"[A-Za-zА-Яа-яІіЇїЄєҐґ]", candidate):
+                    data["full_name"] = candidate
+                    break
 
     missing = [
         label
@@ -159,7 +293,7 @@ def parse_order(text: str):
         raw = data.get(name)
         if raw is None:
             return default
-        cleaned = re.sub(r"[^\d,.\-]", "", raw).replace(",", ".")
+        cleaned = re.sub(r"[^\\d,.\\-]", "", str(raw)).replace(",", ".")
         try:
             return float(cleaned)
         except ValueError:
@@ -176,17 +310,15 @@ def parse_order(text: str):
 
 
 HELP_TEXT = (
-    "Отправь заказ одним сообщением в формате:\n\n"
-    "ФИО: Иван Иванов\n"
-    "Телефон: 380931234567\n"
-    "Город: Одесса\n"
-    "Отделение: 5\n"
-    "Вес: 1\n"
-    "Описание: обувь\n"
-    "Стоимость: 2000\n"
-    "Наложка: 2000\n\n"
-    "Обязательные поля: ФИО, Телефон, Город, Отделение.\n"
-    "Если наложки нет — строку «Наложка» можно не писать."
+    "Просто перешли заказ из группы в этот бот — можно вместе с фото.\\n\\n"
+    "Поддерживается обычный формат из группы:\\n"
+    "Одесса\\n"
+    "НП 142\\n"
+    "Погорельцева Наталья\\n"
+    "+380 95 947 7703\\n\\n"
+    "Оценка 1600\\n\\n"
+    "Также работает формат «Ключ: Значение». "
+    "Обязательны: ФИО, телефон, город и отделение."
 )
 
 
@@ -230,28 +362,52 @@ if bot:
             f"Sender: {sender_status}",
         )
 
+    def _process_order_message(message, order_text: str):
+        if not np_client:
+            bot.reply_to(message, "Ошибка конфигурации: NOVA_POSHTA_API_KEY не задан.")
+            return
+
+        try:
+            order = parse_order(order_text)
+            result = np_client.create_ttn(**order)
+            reply = (
+                f"✅ ТТН создана: {result['ttn']}\\n"
+                f"{order['city']} · НП {order['warehouse']}\\n"
+                f"{order['full_name']} · {order['phone']}\\n"
+                f"Оценка: {order['cost']:g} грн"
+            )
+            if order.get("cod_amount", 0) > 0:
+                reply += f"\\nНаложка: {order['cod_amount']:g} грн"
+            if result.get("estimated_delivery_date"):
+                reply += f"\\nОриентировочная доставка: {result['estimated_delivery_date']}"
+            bot.reply_to(message, reply)
+        except (ValueError, NovaPoshtaError) as exc:
+            bot.reply_to(message, f"❌ {exc}\\n\\n{HELP_TEXT}")
+        except Exception:
+            logger.exception("Unhandled order error")
+            bot.reply_to(message, "❌ Внутренняя ошибка. Детали записаны в лог сервиса.")
+
     @bot.message_handler(content_types=["text"])
     def text_handler(message):
         if not _is_allowed(message):
             return
         if (message.text or "").startswith("/"):
             return
-        if not np_client:
-            bot.reply_to(message, "Ошибка конфигурации: NOVA_POSHTA_API_KEY не задан.")
+        _process_order_message(message, message.text or "")
+
+    @bot.message_handler(content_types=["photo", "video", "document", "animation"])
+    def media_handler(message):
+        if not _is_allowed(message):
             return
 
-        try:
-            order = parse_order(message.text)
-            result = np_client.create_ttn(**order)
-            reply = f"✅ ТТН создана: {result['ttn']}"
-            if result.get("estimated_delivery_date"):
-                reply += f"\nОриентировочная доставка: {result['estimated_delivery_date']}"
-            bot.reply_to(message, reply)
-        except (ValueError, NovaPoshtaError) as exc:
-            bot.reply_to(message, f"❌ {exc}\n\n{HELP_TEXT}")
-        except Exception:
-            logger.exception("Unhandled order error")
-            bot.reply_to(message, "❌ Внутренняя ошибка. Детали записаны в лог сервиса.")
+        # При пересылке заказа из группы подпись Telegram приходит в message.caption.
+        # Само фото/видео остаётся в пересланном сообщении, а ТТН создаётся по подписи.
+        caption = (message.caption or "").strip()
+        if not caption:
+            # В медиагруппе часть фотографий может приходить без подписи.
+            # Не спамим ошибками: обрабатывается элемент альбома, на котором есть caption.
+            return
+        _process_order_message(message, caption)
 
 
 @app.get("/")
