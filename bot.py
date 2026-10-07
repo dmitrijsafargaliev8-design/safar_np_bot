@@ -296,6 +296,10 @@ def ready():
                 errors["sender"] = str(exc)
 
     overall = telegram_ok and nova_poshta_ok and sender_ok
+    logger.info(
+        "READY_CHECK telegram_ok=%s nova_poshta_ok=%s sender_ok=%s errors=%s",
+        telegram_ok, nova_poshta_ok, sender_ok, errors
+    )
     return jsonify(
         status="ready" if overall else "not_ready",
         telegram_ok=telegram_ok,
