@@ -250,7 +250,12 @@ def parse_order(text: str):
         # Также понимает "Одесса НП 142" в одной строке.
         city_prefix = line[:match.start()].strip(" ,;-")
         if city_prefix and not data.get("city") and len(city_prefix) <= 80:
-            data["city"] = city_prefix
+            settlement_prefix = SETTLEMENT_RE.match(city_prefix)
+            if settlement_prefix and not ADDRESS_RE.match(city_prefix):
+                data["city"] = settlement_prefix.group(2).strip(" ,.")
+                data["settlement_type"] = _settlement_type(settlement_prefix.group(1))
+            else:
+                data["city"] = city_prefix
         break
 
     # Адресная доставка: область / район / населённый пункт / улица+дом.
@@ -327,25 +332,63 @@ def parse_order(text: str):
                 data["city"] = candidate.strip(" ,.")
                 break
 
-    # ФИО обычно стоит непосредственно перед телефоном.
+    # ФИО может стоять как до, так и после телефона.
+    # Это важно для пересланных заказов вида:
+    # "м. Коростень / Нова пошта 7 / 096... / Синяк Віта / Оценка 900"
+    # и для того же заказа, собранного Telegram в одну строку.
     if not data.get("full_name") and phone_line_index is not None:
         phone_line = lines[phone_line_index]
         phone_match = PHONE_RE.search(phone_line)
-        same_line_prefix = (
-            phone_line[:phone_match.start()].strip(" ,;-:")
-            if phone_match
-            else ""
-        )
 
-        if (
-            same_line_prefix
-            and not WAREHOUSE_RE.search(same_line_prefix)
-            and not COST_RE.search(same_line_prefix)
-            and not COD_RE.search(same_line_prefix)
-            and not ADDRESS_RE.match(same_line_prefix)
-        ):
-            data["full_name"] = same_line_prefix
-        else:
+        def _name_candidate(value: str) -> str:
+            candidate = (value or "").strip(" ,;-:")
+            if not candidate:
+                return ""
+
+            # Если после имени в той же строке идёт "Оценка ..." или "Наложка ...",
+            # отрезаем служебную часть.
+            cut_positions = []
+            for pattern in (COST_RE, COD_RE):
+                marker = pattern.search(candidate)
+                if marker:
+                    cut_positions.append(marker.start())
+            if cut_positions:
+                candidate = candidate[:min(cut_positions)].strip(" ,;-:")
+
+            if (
+                not candidate
+                or PHONE_RE.search(candidate)
+                or WAREHOUSE_RE.search(candidate)
+                or COST_RE.search(candidate)
+                or COD_RE.search(candidate)
+                or AREA_RE.match(candidate)
+                or REGION_RE.match(candidate)
+                or ADDRESS_RE.match(candidate)
+            ):
+                return ""
+
+            if candidate == data.get("city"):
+                return ""
+
+            # Имя получателя для НП обычно содержит минимум 2 словесные части.
+            words = re.findall(r"[A-Za-zА-Яа-яІіЇїЄєҐґ'’\-]+", candidate)
+            if len(words) < 2:
+                return ""
+            return candidate
+
+        if phone_match:
+            # Самый частый формат из группы: телефон, затем ФИО.
+            same_line_suffix = _name_candidate(phone_line[phone_match.end():])
+            if same_line_suffix:
+                data["full_name"] = same_line_suffix
+
+            # Старый формат тоже оставляем: ФИО перед телефоном.
+            if not data.get("full_name"):
+                same_line_prefix = _name_candidate(phone_line[:phone_match.start()])
+                if same_line_prefix:
+                    data["full_name"] = same_line_prefix
+
+        if not data.get("full_name"):
             skip_indices = {
                 x for x in (
                     warehouse_line_index,
@@ -356,22 +399,19 @@ def parse_order(text: str):
                 )
                 if x is not None
             }
-            for j in range(phone_line_index - 1, -1, -1):
+
+            # Сначала строки ПОСЛЕ телефона, затем ДО него.
+            # Так "096... / Синяк Віта / Оценка 900" разбирается без шаблонов.
+            nearby_indices = list(range(phone_line_index + 1, len(lines)))
+            nearby_indices += list(range(phone_line_index - 1, -1, -1))
+
+            for j in nearby_indices:
+                if j in skip_indices:
+                    continue
                 candidate = lines[j].strip()
-                if not candidate or j in skip_indices:
+                if not candidate:
                     continue
-                if candidate == data.get("city"):
-                    continue
-                if (
-                    PHONE_RE.search(candidate)
-                    or WAREHOUSE_RE.search(candidate)
-                    or COST_RE.search(candidate)
-                    or COD_RE.search(candidate)
-                    or AREA_RE.match(candidate)
-                    or REGION_RE.match(candidate)
-                    or ADDRESS_RE.match(candidate)
-                ):
-                    continue
+
                 if ":" in candidate:
                     candidate_key = _canonical_key(candidate.split(":", 1)[0])
                     if candidate_key in {
@@ -384,7 +424,9 @@ def parse_order(text: str):
                         "description",
                     }:
                         continue
-                if re.search(r"[A-Za-zА-Яа-яІіЇїЄєҐґ]", candidate):
+
+                candidate = _name_candidate(candidate)
+                if candidate:
                     data["full_name"] = candidate
                     break
 
