@@ -18,6 +18,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger("safar_np_bot")
 
+# Temporary safe diagnostic: log only likely configuration KEY NAMES, never values.
+_candidate_env_names = sorted(
+    k for k in os.environ
+    if any(tag in k.upper() for tag in (
+        "BOT", "TOKEN", "TELE", "NOVA", "NP", "API", "WEBHOOK", "BASE", "SENDER"
+    ))
+)
+logger.info("CONFIG_KEY_NAMES=%s", _candidate_env_names)
+
 TELEGRAM_BOT_TOKEN = (
     os.getenv("TELEGRAM_BOT_TOKEN")
     or os.getenv("BOT_TOKEN")
