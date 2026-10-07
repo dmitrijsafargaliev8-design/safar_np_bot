@@ -385,6 +385,20 @@ def ensure_webhook():
 
 ensure_webhook()
 
+# Temporary setup diagnostic for the confirmed sender branch:
+# Nova Poshta mobile branch №778, Odesa, vul. Bazova 20.
+try:
+    if np_client and not os.getenv("NP_SENDER_ADDRESS_REF"):
+        _sender_city_ref = np_client.get_city_ref("Одеса")
+        _sender_wh_ref = np_client.get_warehouse_ref(_sender_city_ref, "778")
+        logger.info(
+            "CONFIRMED_SENDER_LOOKUP city_ref=%s warehouse_ref=%s",
+            _sender_city_ref,
+            _sender_wh_ref,
+        )
+except Exception as exc:
+    logger.warning("CONFIRMED_SENDER_LOOKUP_FAILED=%s", exc)
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
