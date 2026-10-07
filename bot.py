@@ -338,6 +338,39 @@ def ready():
     ), (200 if overall else 503)
 
 
+_one_time_ttn_result = None
+
+@app.get("/ops/create-one-time-ttn")
+def create_one_time_ttn():
+    global _one_time_ttn_result
+    secret = os.getenv("ONE_TIME_TTN_SECRET", "")
+    supplied = request.args.get("secret", "")
+    if not secret or not hmac.compare_digest(supplied, secret):
+        return jsonify(error="forbidden"), 403
+    if _one_time_ttn_result is not None:
+        return jsonify(ok=True, duplicate_blocked=True, result=_one_time_ttn_result)
+    if not np_client:
+        return jsonify(error="Nova Poshta client is not configured"), 503
+
+    try:
+        result = np_client.create_ttn(
+            full_name=os.getenv("ONE_TIME_TTN_NAME", ""),
+            phone=os.getenv("ONE_TIME_TTN_PHONE", ""),
+            city=os.getenv("ONE_TIME_TTN_CITY", ""),
+            warehouse=os.getenv("ONE_TIME_TTN_WAREHOUSE", ""),
+            weight=float(os.getenv("ONE_TIME_TTN_WEIGHT", "1")),
+            description=os.getenv("ONE_TIME_TTN_DESCRIPTION", "Одяг та взуття"),
+            cost=float(os.getenv("ONE_TIME_TTN_COST", "200")),
+            cod_amount=float(os.getenv("ONE_TIME_TTN_COD", "0")),
+        )
+        _one_time_ttn_result = result
+        logger.info("ONE_TIME_TTN_CREATED number=%s", result.get("ttn"))
+        return jsonify(ok=True, result=result)
+    except Exception as exc:
+        logger.exception("ONE_TIME_TTN_FAILED")
+        return jsonify(ok=False, error=str(exc)), 500
+
+
 @app.post("/webhook")
 def webhook():
     if not bot:
