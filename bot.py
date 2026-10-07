@@ -131,25 +131,25 @@ def _canonical_key(raw: str) -> str:
 
 
 PHONE_RE = re.compile(
-    r"(?<!\\d)(?:\\+?38[\\s().-]*)?0[\\s().-]*\\d(?:[\\s().-]*\\d){8}(?!\\d)"
+    r"(?<!\d)(?:\+?38[\s().-]*)?0[\s().-]*\d(?:[\s().-]*\d){8}(?!\d)"
 )
 WAREHOUSE_RE = re.compile(
-    r"(?i)\\b(?:нп|нова\\s*пошта|новая\\s*почта|отд(?:еление)?|відд(?:ілення)?)"
-    r"\\s*(?:№|#|n)?\\s*[:\\-]?\\s*(\\d{1,5})\\b"
+    r"(?i)\b(?:нп|нова\s*пошта|новая\s*почта|отд(?:еление)?|відд(?:ілення)?)"
+    r"\s*(?:№|#|n)?\s*[:\-]?\s*(\d{1,5})\b"
 )
 COST_RE = re.compile(
-    r"(?i)\\b(?:оценка|оцінка|стоимость|вартість|объявленная\\s+стоимость|оголошена\\s+вартість)"
-    r"\\b\\s*[:\\-]?\\s*([\\d\\s.,]+)"
+    r"(?i)\b(?:оценка|оцінка|стоимость|вартість|объявленная\s+стоимость|оголошена\s+вартість)"
+    r"\b\s*[:\-]?\s*([\d\s.,]+)"
 )
 COD_RE = re.compile(
-    r"(?i)\\b(?:наложка|наложенный\\s+платеж|накладений\\s+платіж|післяплата|cod)"
-    r"\\b\\s*[:\\-]?\\s*([\\d\\s.,]+)"
+    r"(?i)\b(?:наложка|наложенный\s+платеж|накладений\s+платіж|післяплата|cod)"
+    r"\b\s*[:\-]?\s*([\d\s.,]+)"
 )
 
 
 def _clean_lines(text: str):
     return [
-        re.sub(r"\\s+", " ", raw_line).strip()
+        re.sub(r"\s+", " ", raw_line).strip()
         for raw_line in (text or "").splitlines()
         if raw_line.strip()
     ]
@@ -163,7 +163,7 @@ def parse_order(text: str):
     data = {}
     lines = _clean_lines(raw_text)
 
-    # 1) Старый формат "Ключ: Значение" по-прежнему поддерживается.
+    # Формат "Ключ: Значение".
     for line in lines:
         if ":" not in line:
             continue
@@ -173,7 +173,7 @@ def parse_order(text: str):
         if value:
             data[key] = value
 
-    # 2) Свободный формат из рабочей Telegram-группы:
+    # Свободный формат из группы:
     # Одесса
     # НП 142
     # Погорельцева Наталья
@@ -189,11 +189,12 @@ def parse_order(text: str):
         match = WAREHOUSE_RE.search(line)
         if not match:
             continue
+
         warehouse_line_index = i
         if not data.get("warehouse"):
             data["warehouse"] = match.group(1)
 
-        # Поддержка строки "Одесса НП 142".
+        # Также понимает "Одесса НП 142" в одной строке.
         city_prefix = line[:match.start()].strip(" ,;-")
         if city_prefix and not data.get("city") and len(city_prefix) <= 80:
             data["city"] = city_prefix
@@ -215,7 +216,7 @@ def parse_order(text: str):
             phone_line_index = i
             break
 
-    # Обычно город стоит строкой прямо перед "НП 142".
+    # Город обычно находится непосредственно перед строкой НП.
     if not data.get("city") and warehouse_line_index is not None and warehouse_line_index > 0:
         candidate = lines[warehouse_line_index - 1]
         if (
@@ -227,7 +228,7 @@ def parse_order(text: str):
         ):
             data["city"] = candidate
 
-    # Обычно ФИО стоит прямо перед телефоном.
+    # ФИО обычно находится непосредственно перед телефоном.
     if not data.get("full_name") and phone_line_index is not None:
         phone_line = lines[phone_line_index]
         phone_match = PHONE_RE.search(phone_line)
@@ -293,7 +294,7 @@ def parse_order(text: str):
         raw = data.get(name)
         if raw is None:
             return default
-        cleaned = re.sub(r"[^\\d,.\\-]", "", str(raw)).replace(",", ".")
+        cleaned = re.sub(r"[^\d,.\-]", "", str(raw)).replace(",", ".")
         try:
             return float(cleaned)
         except ValueError:
@@ -310,13 +311,13 @@ def parse_order(text: str):
 
 
 HELP_TEXT = (
-    "Просто перешли заказ из группы в этот бот — можно вместе с фото.\\n\\n"
-    "Поддерживается обычный формат из группы:\\n"
-    "Одесса\\n"
-    "НП 142\\n"
-    "Погорельцева Наталья\\n"
-    "+380 95 947 7703\\n\\n"
-    "Оценка 1600\\n\\n"
+    "Просто перешли заказ из группы в этот бот — можно вместе с фото.\n\n"
+    "Поддерживается формат из группы:\n"
+    "Одесса\n"
+    "НП 142\n"
+    "Погорельцева Наталья\n"
+    "+380 95 947 7703\n\n"
+    "Оценка 1600\n\n"
     "Также работает формат «Ключ: Значение». "
     "Обязательны: ФИО, телефон, город и отделение."
 )
@@ -371,18 +372,18 @@ if bot:
             order = parse_order(order_text)
             result = np_client.create_ttn(**order)
             reply = (
-                f"✅ ТТН создана: {result['ttn']}\\n"
-                f"{order['city']} · НП {order['warehouse']}\\n"
-                f"{order['full_name']} · {order['phone']}\\n"
+                f"✅ ТТН создана: {result['ttn']}\n"
+                f"{order['city']} · НП {order['warehouse']}\n"
+                f"{order['full_name']} · {order['phone']}\n"
                 f"Оценка: {order['cost']:g} грн"
             )
             if order.get("cod_amount", 0) > 0:
-                reply += f"\\nНаложка: {order['cod_amount']:g} грн"
+                reply += f"\nНаложка: {order['cod_amount']:g} грн"
             if result.get("estimated_delivery_date"):
-                reply += f"\\nОриентировочная доставка: {result['estimated_delivery_date']}"
+                reply += f"\nОриентировочная доставка: {result['estimated_delivery_date']}"
             bot.reply_to(message, reply)
         except (ValueError, NovaPoshtaError) as exc:
-            bot.reply_to(message, f"❌ {exc}\\n\\n{HELP_TEXT}")
+            bot.reply_to(message, f"❌ {exc}\n\n{HELP_TEXT}")
         except Exception:
             logger.exception("Unhandled order error")
             bot.reply_to(message, "❌ Внутренняя ошибка. Детали записаны в лог сервиса.")
@@ -400,12 +401,9 @@ if bot:
         if not _is_allowed(message):
             return
 
-        # При пересылке заказа из группы подпись Telegram приходит в message.caption.
-        # Само фото/видео остаётся в пересланном сообщении, а ТТН создаётся по подписи.
         caption = (message.caption or "").strip()
         if not caption:
-            # В медиагруппе часть фотографий может приходить без подписи.
-            # Не спамим ошибками: обрабатывается элемент альбома, на котором есть caption.
+            # В медиагруппе подпись обычно есть только у одного элемента.
             return
         _process_order_message(message, caption)
 
