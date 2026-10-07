@@ -18,29 +18,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger("safar_np_bot")
 
-# Temporary safe diagnostic: log only likely configuration KEY NAMES, never values.
-_candidate_env_names = sorted(
-    k for k in os.environ
-    if any(tag in k.upper() for tag in (
-        "BOT", "TOKEN", "TELE", "NOVA", "NP", "API", "WEBHOOK", "BASE", "SENDER"
-    ))
-)
-logger.info("CONFIG_KEY_NAMES=%s", _candidate_env_names)
 
 TELEGRAM_BOT_TOKEN = (
     os.getenv("TELEGRAM_BOT_TOKEN")
     or os.getenv("BOT_TOKEN")
+    or os.getenv("Bot_taking")
     or ""
 ).strip()
 NOVA_POSHTA_API_KEY = (
     os.getenv("NOVA_POSHTA_API_KEY")
     or os.getenv("NP_API_KEY")
+    or os.getenv("Apy_key_np")
     or ""
 ).strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 
 PUBLIC_BASE_URL = (
     os.getenv("PUBLIC_BASE_URL")
+    or os.getenv("WEBHOOK_BASE_URL")
+    or os.getenv("WEBHOOK_URL")
     or (
         f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}"
         if os.getenv("RENDER_EXTERNAL_HOSTNAME")
