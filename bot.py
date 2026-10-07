@@ -269,6 +269,14 @@ def health():
     )
 
 
+@app.get("/bot-info")
+def bot_info():
+    if not bot:
+        return jsonify(error="Telegram bot is not configured"), 503
+    me = bot.get_me()
+    return jsonify(username=me.username or "", first_name=me.first_name or "")
+
+
 @app.get("/ready")
 def ready():
     telegram_ok = False
