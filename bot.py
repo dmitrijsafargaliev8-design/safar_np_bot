@@ -294,6 +294,35 @@ def ready():
                 sender_ok = True
             except Exception as exc:
                 errors["sender"] = str(exc)
+                try:
+                    senders = np_client._call(
+                        "Counterparty",
+                        "getCounterparties",
+                        {"CounterpartyProperty": "Sender", "Page": "1"},
+                    )
+                    if len(senders) == 1 and senders[0].get("Ref"):
+                        sender_ref = senders[0]["Ref"]
+                        addresses = np_client._call(
+                            "Counterparty",
+                            "getCounterpartyAddresses",
+                            {
+                                "Ref": sender_ref,
+                                "CounterpartyProperty": "Sender",
+                                "Page": "1",
+                            },
+                        )
+                        safe_options = [
+                            {
+                                "Ref": a.get("Ref"),
+                                "Description": a.get("Description"),
+                                "ShortAddress": a.get("ShortAddress"),
+                                "CityRef": a.get("CityRef"),
+                            }
+                            for a in addresses
+                        ]
+                        logger.info("SENDER_ADDRESS_OPTIONS=%s", safe_options)
+                except Exception as diag_exc:
+                    logger.warning("Could not list sender address options: %s", diag_exc)
 
     overall = telegram_ok and nova_poshta_ok and sender_ok
     logger.info(
