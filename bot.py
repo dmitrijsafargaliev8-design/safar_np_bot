@@ -145,6 +145,23 @@ COD_RE = re.compile(
     r"(?i)\b(?:наложка|наложенный\s+платеж|накладений\s+платіж|післяплата|cod)"
     r"\b\s*[:\-]?\s*([\d\s.,]+)"
 )
+AREA_RE = re.compile(r"(?i)^(.+?)\s+(?:область|обл\.?)$")
+REGION_RE = re.compile(r"(?i)^(.+?)\s+(?:район|р-н\.?)$")
+SETTLEMENT_RE = re.compile(
+    r"(?i)^(м(?:істо)?|г(?:ород)?|с(?:ело)?|смт|пгт|селище|пос(?:елок)?)\.?\s*(.+)$"
+)
+ADDRESS_RE = re.compile(
+    r"(?i)^(?:вул(?:иця)?|улица|ул|просп(?:ект)?|проспект|пров(?:улок)?|переулок|"
+    r"шосе|наб(?:ережна)?|набережная)\.?\s+(.+)$"
+)
+FLAT_RE = re.compile(
+    r"(?i)(?:,\s*|\s+)(?:кв(?:артира)?|кв\.?|apt\.?)\s*[:№#-]?\s*"
+    r"([0-9]+[0-9A-Za-zА-Яа-яІіЇїЄєҐґ/-]*)\s*$"
+)
+HOUSE_RE = re.compile(
+    r"(?i)(?:,\s*|\s+)(?:(?:буд(?:инок)?|дом|д)\.?\s*)?"
+    r"([0-9]+[0-9A-Za-zА-Яа-яІіЇїЄєҐґ/-]*)\s*$"
+)
 
 
 def _clean_lines(text: str):
@@ -155,6 +172,44 @@ def _clean_lines(text: str):
     ]
 
 
+def _settlement_type(prefix: str) -> str:
+    p = (prefix or "").strip().lower().replace(".", "")
+    if p.startswith("село") or p == "с":
+        return "село"
+    if p in {"смт", "пгт"} or p.startswith("селище") or p.startswith("пос"):
+        return "селище міського типу"
+    return "місто"
+
+
+def _parse_street_line(line: str):
+    match = ADDRESS_RE.match(line or "")
+    if not match:
+        return None
+
+    body = match.group(1).strip(" ,")
+    flat = ""
+
+    flat_match = FLAT_RE.search(body)
+    if flat_match:
+        flat = flat_match.group(1)
+        body = body[:flat_match.start()].strip(" ,")
+
+    house_match = HOUSE_RE.search(body)
+    if not house_match:
+        return None
+
+    house = house_match.group(1)
+    street = body[:house_match.start()].strip(" ,")
+    if not street:
+        return None
+
+    return {
+        "street": street,
+        "house": house,
+        "flat": flat,
+    }
+
+
 def parse_order(text: str):
     raw_text = (text or "").strip()
     if not raw_text:
@@ -163,7 +218,7 @@ def parse_order(text: str):
     data = {}
     lines = _clean_lines(raw_text)
 
-    # Формат "Ключ: Значение".
+    # Формат "Ключ: Значение" по-прежнему поддерживается.
     for line in lines:
         if ":" not in line:
             continue
@@ -173,32 +228,59 @@ def parse_order(text: str):
         if value:
             data[key] = value
 
-    # Свободный формат из группы:
-    # Одесса
-    # НП 142
-    # Погорельцева Наталья
-    # +380 95 947 7703
-    # Оценка 1600
     if not data.get("phone"):
         match = PHONE_RE.search(raw_text)
         if match:
             data["phone"] = match.group(0)
 
     warehouse_line_index = None
+    area_line_index = None
+    region_line_index = None
+    settlement_line_index = None
+    address_line_index = None
+
+    # Отделение НП.
     for i, line in enumerate(lines):
         match = WAREHOUSE_RE.search(line)
         if not match:
             continue
-
         warehouse_line_index = i
-        if not data.get("warehouse"):
-            data["warehouse"] = match.group(1)
+        data.setdefault("warehouse", match.group(1))
 
         # Также понимает "Одесса НП 142" в одной строке.
         city_prefix = line[:match.start()].strip(" ,;-")
         if city_prefix and not data.get("city") and len(city_prefix) <= 80:
             data["city"] = city_prefix
         break
+
+    # Адресная доставка: область / район / населённый пункт / улица+дом.
+    for i, line in enumerate(lines):
+        area_match = AREA_RE.match(line)
+        if area_match and not data.get("area"):
+            data["area"] = area_match.group(1).strip(" ,.")
+            area_line_index = i
+            continue
+
+        region_match = REGION_RE.match(line)
+        if region_match and not data.get("region"):
+            data["region"] = region_match.group(1).strip(" ,.")
+            region_line_index = i
+            continue
+
+        settlement_match = SETTLEMENT_RE.match(line)
+        if settlement_match and not data.get("city"):
+            candidate = settlement_match.group(2).strip(" ,.")
+            # Не спутать "вул." / "ул." с населённым пунктом.
+            if candidate and not ADDRESS_RE.match(line):
+                data["city"] = candidate
+                data["settlement_type"] = _settlement_type(settlement_match.group(1))
+                settlement_line_index = i
+                continue
+
+        address_parts = _parse_street_line(line)
+        if address_parts and not data.get("street"):
+            data.update(address_parts)
+            address_line_index = i
 
     if not data.get("cost"):
         match = COST_RE.search(raw_text)
@@ -216,7 +298,7 @@ def parse_order(text: str):
             phone_line_index = i
             break
 
-    # Город обычно находится непосредственно перед строкой НП.
+    # Для отправления на отделение город обычно стоит перед "НП 142".
     if not data.get("city") and warehouse_line_index is not None and warehouse_line_index > 0:
         candidate = lines[warehouse_line_index - 1]
         if (
@@ -228,7 +310,24 @@ def parse_order(text: str):
         ):
             data["city"] = candidate
 
-    # ФИО обычно находится непосредственно перед телефоном.
+    # Для адресной доставки без "село/м./г." берём строку перед улицей.
+    if not data.get("city") and address_line_index is not None and address_line_index > 0:
+        for j in range(address_line_index - 1, -1, -1):
+            if j in {area_line_index, region_line_index}:
+                continue
+            candidate = lines[j]
+            if (
+                candidate
+                and not PHONE_RE.search(candidate)
+                and not COST_RE.search(candidate)
+                and not COD_RE.search(candidate)
+                and not AREA_RE.match(candidate)
+                and not REGION_RE.match(candidate)
+            ):
+                data["city"] = candidate.strip(" ,.")
+                break
+
+    # ФИО обычно стоит непосредственно перед телефоном.
     if not data.get("full_name") and phone_line_index is not None:
         phone_line = lines[phone_line_index]
         phone_match = PHONE_RE.search(phone_line)
@@ -243,14 +342,23 @@ def parse_order(text: str):
             and not WAREHOUSE_RE.search(same_line_prefix)
             and not COST_RE.search(same_line_prefix)
             and not COD_RE.search(same_line_prefix)
+            and not ADDRESS_RE.match(same_line_prefix)
         ):
             data["full_name"] = same_line_prefix
         else:
+            skip_indices = {
+                x for x in (
+                    warehouse_line_index,
+                    area_line_index,
+                    region_line_index,
+                    settlement_line_index,
+                    address_line_index,
+                )
+                if x is not None
+            }
             for j in range(phone_line_index - 1, -1, -1):
                 candidate = lines[j].strip()
-                if not candidate:
-                    continue
-                if j == warehouse_line_index:
+                if not candidate or j in skip_indices:
                     continue
                 if candidate == data.get("city"):
                     continue
@@ -259,6 +367,9 @@ def parse_order(text: str):
                     or WAREHOUSE_RE.search(candidate)
                     or COST_RE.search(candidate)
                     or COD_RE.search(candidate)
+                    or AREA_RE.match(candidate)
+                    or REGION_RE.match(candidate)
+                    or ADDRESS_RE.match(candidate)
                 ):
                     continue
                 if ":" in candidate:
@@ -282,11 +393,16 @@ def parse_order(text: str):
         for key, label in (
             ("full_name", "ФИО"),
             ("phone", "Телефон"),
-            ("city", "Город"),
-            ("warehouse", "Отделение"),
+            ("city", "Город/населённый пункт"),
         )
         if not data.get(key)
     ]
+
+    has_warehouse = bool(data.get("warehouse"))
+    has_address = bool(data.get("street") and data.get("house"))
+    if not has_warehouse and not has_address:
+        missing.append("Отделение НП или адрес")
+
     if missing:
         raise ValueError("Не хватает полей: " + ", ".join(missing))
 
@@ -303,6 +419,14 @@ def parse_order(text: str):
     data["weight"] = num("weight", 1.0)
     data["cost"] = num("cost", 200.0)
     data["cod_amount"] = num("cod_amount", 0.0)
+
+    data.setdefault("warehouse", "")
+    data.setdefault("street", "")
+    data.setdefault("house", "")
+    data.setdefault("flat", "")
+    data.setdefault("area", "")
+    data.setdefault("region", "")
+    data.setdefault("settlement_type", "")
     data.setdefault("description", "Одяг та взуття")
     data.setdefault("payer_type", "Recipient")
     data.setdefault("payment_method", "Cash")
@@ -312,14 +436,20 @@ def parse_order(text: str):
 
 HELP_TEXT = (
     "Просто перешли заказ из группы в этот бот — можно вместе с фото.\n\n"
-    "Поддерживается формат из группы:\n"
+    "На отделение:\n"
     "Одесса\n"
     "НП 142\n"
     "Погорельцева Наталья\n"
-    "+380 95 947 7703\n\n"
+    "+380 95 947 7703\n"
     "Оценка 1600\n\n"
-    "Также работает формат «Ключ: Значение». "
-    "Обязательны: ФИО, телефон, город и отделение."
+    "Или адресная доставка:\n"
+    "Одеська область\n"
+    "Березівський район\n"
+    "Село Петровірівка\n"
+    "Вул. Шклярука 15\n"
+    "Желязкова Лариса\n"
+    "0972218934\n"
+    "Оценка 1800"
 )
 
 
@@ -371,9 +501,14 @@ if bot:
         try:
             order = parse_order(order_text)
             result = np_client.create_ttn(**order)
+            destination = (
+                f"{order['city']} · НП {order['warehouse']}"
+                if order.get("warehouse")
+                else f"{order['city']} · {order['street']} {order['house']}"
+            )
             reply = (
                 f"✅ ТТН создана: {result['ttn']}\n"
-                f"{order['city']} · НП {order['warehouse']}\n"
+                f"{destination}\n"
                 f"{order['full_name']} · {order['phone']}\n"
                 f"Оценка: {order['cost']:g} грн"
             )
