@@ -436,7 +436,13 @@ class NovaPoshtaClient:
         full_name: str,
         phone: str,
         city: str,
-        warehouse: str,
+        warehouse: str = "",
+        street: str = "",
+        house: str = "",
+        flat: str = "",
+        area: str = "",
+        region: str = "",
+        settlement_type: str = "",
         weight: float = 1.0,
         description: str = "Одяг та взуття",
         cost: float = 200.0,
@@ -445,15 +451,19 @@ class NovaPoshtaClient:
         payment_method: str = "Cash",
         email: str = "",
     ):
-        city_ref = self.get_city_ref(city)
-        warehouse_ref = self.get_warehouse_ref(city_ref, warehouse)
         sender = self.get_sender_info()
-        recipient_ref, contact_ref, phone = self.get_or_create_recipient(
-            full_name, phone, city_ref, email=email
-        )
+        phone = normalize_phone(phone)
 
-        payer_type = "Sender" if _norm_text(payer_type) in {"sender", "отправитель", "відправник"} else "Recipient"
-        payment_method = "NonCash" if _norm_text(payment_method) in {"noncash", "безнал", "безготівковий", "безготівка"} else "Cash"
+        payer_type = (
+            "Sender"
+            if _norm_text(payer_type) in {"sender", "отправитель", "відправник"}
+            else "Recipient"
+        )
+        payment_method = (
+            "NonCash"
+            if _norm_text(payment_method) in {"noncash", "безнал", "безготівковий", "безготівка"}
+            else "Cash"
+        )
 
         if weight <= 0:
             raise NovaPoshtaError("Вес должен быть больше 0.")
@@ -462,13 +472,14 @@ class NovaPoshtaClient:
         if cod_amount < 0:
             raise NovaPoshtaError("Сумма наложенного платежа не может быть отрицательной.")
 
+        address_delivery = bool((street or "").strip() and (house or "").strip())
+
         props = {
             "PayerType": payer_type,
             "PaymentMethod": payment_method,
             "DateTime": datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y"),
             "CargoType": "Cargo",
             "Weight": f"{weight:g}",
-            "ServiceType": "WarehouseWarehouse",
             "SeatsAmount": "1",
             "Description": (description or "Одяг та взуття").strip()[:100],
             "Cost": f"{cost:.2f}".rstrip("0").rstrip("."),
@@ -477,12 +488,49 @@ class NovaPoshtaClient:
             "SenderAddress": sender["address_ref"],
             "ContactSender": sender["contact_ref"],
             "SendersPhone": sender["phone"],
-            "CityRecipient": city_ref,
-            "Recipient": recipient_ref,
-            "RecipientAddress": warehouse_ref,
-            "ContactRecipient": contact_ref,
-            "RecipientsPhone": phone,
         }
+
+        if address_delivery:
+            # Адресная доставка. Nova Poshta позволяет создать получателя
+            # непосредственно строковыми данными населённого пункта и адреса.
+            city_name, _ = _normalize_city_input(city)
+            props.update(
+                {
+                    "ServiceType": "WarehouseDoors",
+                    "RecipientCityName": city_name,
+                    "RecipientArea": (area or "").strip(),
+                    "RecipientAreaRegions": (region or "").strip(),
+                    "SettlementType": (settlement_type or "").strip(),
+                    "RecipientAddressName": (street or "").strip(),
+                    "RecipientHouse": (house or "").strip(),
+                    "RecipientFlat": (flat or "").strip(),
+                    "RecipientType": "PrivatePerson",
+                    "RecipientName": (full_name or "").strip(),
+                    "RecipientContactName": (full_name or "").strip(),
+                    "RecipientsPhone": phone,
+                    "NewAddress": "1",
+                }
+            )
+        else:
+            if not (warehouse or "").strip():
+                raise NovaPoshtaError("Не указано отделение НП или адрес доставки.")
+
+            city_ref = self.get_city_ref(city)
+            warehouse_ref = self.get_warehouse_ref(city_ref, warehouse)
+            recipient_ref, contact_ref, recipient_phone = self.get_or_create_recipient(
+                full_name, phone, city_ref, email=email
+            )
+
+            props.update(
+                {
+                    "ServiceType": "WarehouseWarehouse",
+                    "CityRecipient": city_ref,
+                    "Recipient": recipient_ref,
+                    "RecipientAddress": warehouse_ref,
+                    "ContactRecipient": contact_ref,
+                    "RecipientsPhone": recipient_phone,
+                }
+            )
 
         if cod_amount > 0:
             props["BackwardDeliveryData"] = [
