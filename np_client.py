@@ -216,6 +216,140 @@ class NovaPoshtaClient:
             )
         return next(iter(refs))
 
+    def get_settlement_ref(
+        self,
+        city_name: str,
+        *,
+        area: str = "",
+        region: str = "",
+        settlement_type: str = "",
+    ) -> str:
+        raw_city = (city_name or "").strip()
+        if not raw_city:
+            raise NovaPoshtaError("Не указан населённый пункт.")
+
+        query, _ = _normalize_city_input(raw_city)
+        rows = self._call(
+            "Address",
+            "searchSettlements",
+            {
+                "CityName": query,
+                "Limit": "150",
+                "Page": "1",
+            },
+        )
+
+        addresses = []
+        for row in rows:
+            if isinstance(row, dict):
+                nested = row.get("Addresses")
+                if isinstance(nested, list):
+                    addresses.extend(x for x in nested if isinstance(x, dict))
+                elif row.get("Ref"):
+                    addresses.append(row)
+
+        if not addresses:
+            raise NovaPoshtaError(f"Населённый пункт не найден: {raw_city}")
+
+        wanted_city = _norm_text(query)
+        wanted_area = _norm_text(area)
+        wanted_region = _norm_text(region)
+        wanted_type = _norm_text(settlement_type)
+
+        def _clean_geo(value: str) -> str:
+            v = _norm_text(value)
+            v = re.sub(
+                r"\b(?:область|обл\.?|район|р-н\.?)\b",
+                "",
+                v,
+            )
+            return re.sub(r"\s+", " ", v).strip(" .,-")
+
+        wanted_area = _clean_geo(wanted_area)
+        wanted_region = _clean_geo(wanted_region)
+
+        # Сначала оставляем точное совпадение названия населённого пункта.
+        exact_city = [
+            row
+            for row in addresses
+            if _norm_text(row.get("MainDescription")) == wanted_city
+        ]
+        matches = exact_city or addresses
+
+        if wanted_area:
+            regional = [
+                row
+                for row in matches
+                if _clean_geo(row.get("Area")) == wanted_area
+            ]
+            if regional:
+                matches = regional
+
+        if wanted_region:
+            district = [
+                row
+                for row in matches
+                if _clean_geo(row.get("Region")) == wanted_region
+            ]
+            if district:
+                matches = district
+
+        if wanted_type:
+            type_aliases = {
+                "село": {"с.", "с"},
+                "місто": {"м.", "м"},
+                "селище міського типу": {"смт", "сmt", "пгт"},
+            }
+            allowed_codes = type_aliases.get(wanted_type, set())
+            if allowed_codes:
+                typed = [
+                    row
+                    for row in matches
+                    if _norm_text(row.get("SettlementTypeCode")) in allowed_codes
+                ]
+                if typed:
+                    matches = typed
+
+        # Для доставки до двери предпочитаем населённые пункты,
+        # где справочник прямо разрешает AddressDelivery.
+        delivery_allowed = [
+            row
+            for row in matches
+            if row.get("AddressDeliveryAllowed") is True
+            or str(row.get("AddressDeliveryAllowed")).lower() == "true"
+        ]
+        if delivery_allowed:
+            matches = delivery_allowed
+
+        refs = {row.get("Ref") for row in matches if row.get("Ref")}
+        if len(refs) != 1:
+            variants = []
+            for row in matches[:8]:
+                label = row.get("Present") or row.get("MainDescription") or ""
+                if label:
+                    variants.append(label)
+            hint = ", ".join(variants)
+            raise NovaPoshtaError(
+                f"Населённый пункт найден неоднозначно: {raw_city}. "
+                + (f"Варианты: {hint}" if hint else "Уточните область/район.")
+            )
+
+        selected_ref = next(iter(refs))
+        selected = next(
+            (row for row in matches if row.get("Ref") == selected_ref),
+            {},
+        )
+        logger.info(
+            "SETTLEMENT_RESOLVED city=%r area=%r region=%r ref=%s present=%r",
+            raw_city,
+            area,
+            region,
+            selected_ref,
+            selected.get("Present"),
+        )
+        return selected_ref
+
+
     def get_warehouse_ref(self, city_ref: str, warehouse_value: str) -> str:
         raw = (warehouse_value or "").strip()
         if not raw:
@@ -491,16 +625,19 @@ class NovaPoshtaClient:
         }
 
         if address_delivery:
-            # Адресная доставка. Nova Poshta позволяет создать получателя
-            # непосредственно строковыми данными населённого пункта и адреса.
-            city_name, _ = _normalize_city_input(city)
+            # Для сёл и небольших населённых пунктов нельзя надёжно передавать
+            # только строку RecipientCityName. Сначала получаем уникальный Ref
+            # из Address/searchSettlements и используем RecipientCityRef.
+            settlement_ref = self.get_settlement_ref(
+                city,
+                area=area,
+                region=region,
+                settlement_type=settlement_type,
+            )
             props.update(
                 {
                     "ServiceType": "WarehouseDoors",
-                    "RecipientCityName": city_name,
-                    "RecipientArea": (area or "").strip(),
-                    "RecipientAreaRegions": (region or "").strip(),
-                    "SettlementType": (settlement_type or "").strip(),
+                    "RecipientCityRef": settlement_ref,
                     "RecipientAddressName": (street or "").strip(),
                     "RecipientHouse": (house or "").strip(),
                     "RecipientFlat": (flat or "").strip(),
