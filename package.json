@@ -1,0 +1,16 @@
+{
+  "name": "safar-app-quality",
+  "private": true,
+  "version": "0.2.0",
+  "description": "Local-only browser and PWA regression checks for the existing SAFAR application",
+  "scripts": {
+    "test:js": "node --test tests/ui/*.test.cjs",
+    "test:e2e": "playwright test",
+    "test:ui": "npm run test:js && npm run test:e2e",
+    "test:e2e:report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.64.0"
+  }
+}

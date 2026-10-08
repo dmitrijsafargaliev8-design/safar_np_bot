@@ -6,9 +6,10 @@ replacement. SQLite remains available for development or a persistent disk.
 import hashlib
 import json
 import logging
+import math
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, time as day_time, timedelta
 from zoneinfo import ZoneInfo
 
 from telebot import types
@@ -22,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 def _json(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+class OrderCorrectionConflict(ValueError):
+    """A stale editor or an in-flight shipment cannot alter this order."""
 
 
 class OrderPipeline:
@@ -39,6 +44,12 @@ class OrderPipeline:
         self.stop = threading.Event()
         self.thread = None
         self.db = OrderJournal(path, database_url)
+        if self.db.backend == "sqlite":
+            # SQLite LOWER only supports ASCII. Match Ukrainian/Russian names
+            # consistently without loading the whole journal into the app.
+            self.db._connection.create_function(
+                "safar_casefold", 1, lambda value: str(value or "").casefold(), deterministic=True,
+            )
         self._recovered_epoch = 0
 
     def _recover(self):
@@ -136,9 +147,30 @@ class OrderPipeline:
                     raise ValueError("Retry must refer to a saved order")
                 job = dict(key=key, chat_id=chat_id, owner_id=owner_id, thread_id=thread,
                            anchor_id=message_id, messages=[], state="collecting", due=0,
+                           created_at=self.clock(),
                            attempts=0, notified=False, result=None, order=None, identity=None,
                            sender_profile=self.sender_preference(chat_id, owner_id))
             previous_media = self.attachments(job)
+            if retry and job.get("app_correction"):
+                draft = job["app_correction"]
+                if job["state"] in {"processing", "uncertain"}:
+                    raise OrderCorrectionConflict("Unconfirmed shipment creation blocks corrections")
+                if draft.get("baseline_revision") != self.order_edit_baseline(job):
+                    raise OrderCorrectionConflict("Order changed; review the app draft before retrying")
+                proposed = draft["proposed_order"]
+                if job.get("order"):
+                    pending = dict(job.get("pending_edits") or {})
+                    pending.update(draft["fields"])
+                    apply_field_patch(self._parse(job), pending)
+                    job["pending_edits"] = pending
+                else:
+                    # A full validated repair is adopted only at this explicit
+                    # Telegram retry, not by an already scheduled queue worker.
+                    job["pending_base"] = proposed
+                    job["pending_edits"] = dict(draft["fields"])
+                    job.pop("override", None)
+                job.pop("app_correction", None)
+                job["correction_version"] = int(job.get("correction_version", 0)) + 1
             # Explicit short corrections are staged; live receipt remains unchanged
             # until deleted by the user and independently verified via Nova Poshta.
             if linked and (message.get("text") or message.get("caption")) and not retry:
@@ -169,6 +201,8 @@ class OrderPipeline:
                 else:
                     job["override"] = correction
                     job.pop("pending_edits", None)
+                    job.pop("pending_base", None)
+                job["correction_version"] = int(job.get("correction_version", 0)) + 1
             old = next((m for m in job["messages"] if m["message_id"] == message_id), None)
             if not retry:
                 if old:
@@ -281,6 +315,8 @@ class OrderPipeline:
     def _parse(self, job):
         # A short correction message must NOT be parsed together with the old
         # caption: it would create contradictory duplicate values.
+        if job.get("pending_base") and not job.get("order") and not job.get("override"):
+            return apply_field_patch(job["pending_base"], job.get("pending_edits") or {})
         if job.get("pending_edits") and job.get("order") and not job.get("override"):
             return apply_field_patch(job["order"], job["pending_edits"])
         if job.get("override"):
@@ -333,6 +369,10 @@ class OrderPipeline:
             receipt = json.loads(row["result"])
             previous_result = receipt.get("result") or receipt
             receipt.setdefault("sender_profile", "default")
+            # An unchanged forwarded source can resolve to an old receipt even
+            # after future sender preference changes. Replacement and tracking
+            # must stay in that receipt's original carrier account.
+            job["sender_profile"] = receipt["sender_profile"]
             original_order = receipt.get("order") or order
             if row["state"] == "created":
                 try:
@@ -355,8 +395,10 @@ class OrderPipeline:
                                due=self.clock(), notified=False)
                     return
                 history = list(receipt.get("history") or [])
-                history.append({"result": previous_result, "order": original_order, "deleted_at": self.clock()})
-                receipt = {"result": previous_result, "order": order, "history": history}
+                history.append({"result": previous_result, "order": original_order, "deleted_at": self.clock(),
+                                "sender_profile": receipt["sender_profile"]})
+                receipt = {"result": previous_result, "order": order, "history": history,
+                           "sender_profile": job["sender_profile"]}
             job["replaced_ttn"] = previous_result["ttn"]
         try:
             shipment_client = self._sender_client(job.get("sender_profile", "default"))
@@ -388,6 +430,7 @@ class OrderPipeline:
                 })
             job.update(state="created", result=result, due=self.clock(), notified=False)
             job.pop("pending_edits", None)
+            job.pop("pending_base", None)
         except NovaPoshtaTemporaryError as exc:
             with self.lock, self.db:
                 if job.get("replaced_ttn"):
@@ -516,9 +559,19 @@ class OrderPipeline:
             current = self._job(job["key"])
             previous_media = self.attachments(job)
             previous_notice = job.get("notice")
+            if current.get("correction_version", 0) != job.get("correction_version", 0):
+                # An app edit can arrive while an existing Telegram notification
+                # is in flight. Retain that draft without enqueueing a shipment.
+                job["correction_version"] = current["correction_version"]
+                for field in ("pending_edits", "pending_base", "app_correction"):
+                    if field in current:
+                        job[field] = current[field]
+                    else:
+                        job.pop(field, None)
             source_changed = (current["messages"] != job["messages"] or
                               current.get("override") != job.get("override"))
-            if current["state"] == "collecting" and job["state"] not in {"created", "uncertain"}:
+            if current["state"] == "collecting" and (
+                    after_notification or job["state"] not in {"created", "uncertain"}):
                 # A correction or /retry arrived while an error was being sent.
                 job.clear()
                 job.update(current)
@@ -579,6 +632,230 @@ class OrderPipeline:
                 (chat_id, owner_id, limit),
             ).fetchall()
         return [json.loads(row["body"]) for row in rows]
+
+    def _order_value(self, *path):
+        """Build an expression from server-owned JSON field names only."""
+        if self.db.backend == "postgres":
+            return "body::jsonb #>> '{" + ",".join(path) + "}'"
+        return "json_extract(body, '$." + ".".join(path) + "')"
+
+    def _fold(self, value):
+        return ("LOWER(" if self.db.backend == "postgres" else "safar_casefold(") + value + ")"
+
+    def _order_filters(self, chat_id, owner_id, *, status="", search="", sender_profile="",
+                       date_from=None, date_to=None, has_ttn=None):
+        """Apply every filter in SQL before pagination and scope all queries."""
+        if status not in {"", "all", "attention", "collecting", "processing", "invalid",
+                          "failed", "uncertain", "created", "deleted"}:
+            raise ValueError("Invalid order status")
+        if not isinstance(search, str) or len(search) > 160:
+            raise ValueError("Invalid order search")
+        if not isinstance(sender_profile, str) or len(sender_profile) > 64:
+            raise ValueError("Invalid sender filter")
+        if has_ttn is not None and type(has_ttn) is not bool:
+            raise ValueError("Invalid TTN filter")
+        for value in (date_from, date_to):
+            if value is not None and (type(value) not in {int, float} or not math.isfinite(value) or value < 0):
+                raise ValueError("Invalid activity date")
+        if date_from is not None and date_to is not None and date_from >= date_to:
+            raise ValueError("Invalid activity date range")
+        clauses, values = ["chat_id=?", "owner_id=?"], [chat_id, owner_id]
+        if status == "attention":
+            clauses.append("state IN ('invalid','failed','uncertain')")
+        elif status and status != "all":
+            clauses.append("state=?")
+            values.append(status)
+        if sender_profile:
+            clauses.append("COALESCE(" + self._order_value("sender_profile") + ",'default')=?")
+            values.append(sender_profile)
+        if date_from is not None:
+            clauses.append("updated>=?")
+            values.append(date_from)
+        if date_to is not None:
+            clauses.append("updated<?")
+            values.append(date_to)
+        ttn = "COALESCE(" + self._order_value("result", "ttn") + ",'')"
+        if has_ttn is not None:
+            clauses.append(ttn + ("!=''" if has_ttn else "=''"))
+        needle = search.strip().casefold()
+        if needle:
+            fields = [self._order_value("order", key) for key in ("full_name", "city", "warehouse")]
+            fields.append(self._order_value("result", "ttn"))
+            # Incomplete captions remain searchable before parsing succeeds.
+            if self.db.backend == "postgres":
+                captions = ("(SELECT string_agg(COALESCE(m->>'caption',m->>'text',''),' ') "
+                            "FROM jsonb_array_elements(COALESCE(body::jsonb->'messages','[]'::jsonb)) AS m)")
+            else:
+                captions = ("(SELECT group_concat(COALESCE(json_extract(value,'$.caption'),"
+                            "json_extract(value,'$.text'),''),' ') FROM json_each(body,'$.messages'))")
+            haystack = " || ' ' || ".join("COALESCE(" + field + ",'')" for field in [*fields, captions])
+            if self.db.backend == "postgres":
+                clauses.append("POSITION(? IN " + self._fold(haystack) + ")>0")
+            else:
+                clauses.append("instr(" + self._fold(haystack) + ",?)>0")
+            values.append(needle)
+        return " AND ".join(clauses), values
+
+    @staticmethod
+    def order_revision(job):
+        """Revision of persisted fields; derived list/detail metadata is excluded."""
+        persisted = {key: value for key, value in job.items()
+                     if key not in {"updated_at", "revision", "app_correction_stale"}}
+        return hashlib.sha256(_json(persisted).encode()).hexdigest()
+
+    @staticmethod
+    def order_edit_baseline(job):
+        """The order/source/receipt a draft was reviewed against, not queue timers."""
+        fields = ("messages", "order", "override", "pending_edits", "pending_base", "identity",
+                  "result", "sender_profile", "state")
+        return hashlib.sha256(_json({key: job.get(key) for key in fields}).encode()).hexdigest()
+
+    def _order_row(self, row):
+        job = json.loads(row["body"])
+        job["revision"] = self.order_revision(job)
+        job["updated_at"] = row["updated"]
+        if job.get("app_correction"):
+            job["app_correction_stale"] = (job["app_correction"].get("baseline_revision") != self.order_edit_baseline(job))
+        return job
+
+    def list_orders_page(self, chat_id, owner_id, *, limit=20, offset=0, sort="updated_desc", **filters):
+        """Filter and paginate the whole private journal, with a stable tie-break.
+
+        Dates refer to journal activity (`updated_at`), never inferred delivery.
+        Legacy list_orders remains unchanged for Telegram /orders commands.
+        """
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 60:
+            raise ValueError("Invalid page limit")
+        if not isinstance(offset, int) or isinstance(offset, bool) or not 0 <= offset <= 2 ** 31 - 1:
+            raise ValueError("Invalid page offset")
+        field_sort = {
+            "recipient_asc": ("full_name", "ASC"), "recipient_desc": ("full_name", "DESC"),
+            "city_asc": ("city", "ASC"), "city_desc": ("city", "DESC"),
+        }
+        if sort in {"updated_desc", "updated_asc"}:
+            direction = "DESC" if sort == "updated_desc" else "ASC"
+            ordering = "updated " + direction + ", key " + direction
+        elif sort in field_sort:
+            field, direction = field_sort[sort]
+            ordering = (self._fold("COALESCE(" + self._order_value("order", field) + ",'')")
+                        + " " + direction + ", updated DESC, key DESC")
+        else:
+            raise ValueError("Invalid order sorting")
+        where, values = self._order_filters(chat_id, owner_id, **filters)
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT body, updated FROM jobs WHERE " + where + " ORDER BY " + ordering + " LIMIT ? OFFSET ?",
+                (*values, limit, offset),
+            ).fetchall()
+        return [self._order_row(row) for row in rows]
+
+    def order_page_count(self, chat_id, owner_id, **filters):
+        where, values = self._order_filters(chat_id, owner_id, **filters)
+        with self.lock:
+            row = self.db.execute("SELECT COUNT(*) AS quantity FROM jobs WHERE " + where, values).fetchone()
+        return int(row["quantity"])
+
+    def order_for_key(self, chat_id, owner_id, key):
+        with self.lock:
+            row = self.db.execute(
+                "SELECT body,updated FROM jobs WHERE key=? AND chat_id=? AND owner_id=?",
+                (key, chat_id, owner_id),
+            ).fetchone()
+        return self._order_row(row) if row else None
+
+    def stage_order_correction(self, chat_id, owner_id, key, changes, *, expected_revision):
+        """Persist a validated draft only. Never enqueue or edit a carrier receipt.
+
+        A later explicit Telegram /retry continues through the existing deletion
+        confirmation and idempotency guards; this method makes no network calls.
+        """
+        fields = {"full_name", "phone", "city", "warehouse", "cost", "cod_amount", "weight", "description"}
+        if not isinstance(changes, dict) or not changes or not set(changes) <= fields:
+            raise ValueError("Unsupported correction fields")
+        patch = {}
+        for field, value in changes.items():
+            if type(value) not in {str, int, float} or (type(value) is float and not math.isfinite(value)):
+                raise ValueError("Invalid correction value")
+            text = str(value).strip()
+            if not text or len(text) > 160 or "\n" in text or "\r" in text:
+                raise ValueError("Invalid correction value")
+            patch[field] = text
+        if not isinstance(expected_revision, str) or len(expected_revision) != 64:
+            raise OrderCorrectionConflict("Refresh the order before editing")
+        with self.lock, self.db:
+            row = self.db.execute(
+                "SELECT body,updated FROM jobs WHERE key=? AND chat_id=? AND owner_id=?",
+                (key, chat_id, owner_id),
+            ).fetchone()
+            if row is None:
+                return None
+            job = json.loads(row["body"])
+            if self.order_revision(job) != expected_revision:
+                raise OrderCorrectionConflict("Order changed; refresh before editing")
+            if job["state"] in {"processing", "uncertain"}:
+                raise OrderCorrectionConflict("Unconfirmed shipment creation blocks corrections")
+            existing_draft = job.get("app_correction") or {}
+            pending = (dict(existing_draft.get("fields") or {})
+                       if existing_draft.get("baseline_revision") == self.order_edit_baseline(job) else {})
+            pending.update(patch)
+            try:
+                base = self._parse(job)
+            except (ValueError, NovaPoshtaError):
+                # An invalid caption may have no usable parsed record. Require a
+                # complete valid proposal instead of guessing missing fields.
+                labels = {"full_name": "Получатель", "phone": "Телефон", "city": "Город",
+                          "warehouse": "Отделение", "cost": "Оценка", "cod_amount": "Наложка",
+                          "weight": "Вес", "description": "Описание"}
+                if not {"full_name", "phone", "city", "warehouse", "cost"} <= set(pending):
+                    raise ValueError("A complete corrected order is required")
+                base = self.parser("\n".join(labels[field] + ": " + value for field, value in pending.items()))
+            proposed = apply_field_patch(base, pending)  # validate all fields before any write
+            job["app_correction"] = {
+                "fields": pending, "proposed_order": proposed,
+                "baseline_revision": self.order_edit_baseline(job), "staged_at": self.clock(),
+            }
+            job["correction_version"] = int(job.get("correction_version", 0)) + 1
+            self._write(job)
+            updated = self.db.execute("SELECT body,updated FROM jobs WHERE key=?", (key,)).fetchone()
+        return {"job": self._order_row(updated), "staged": True, "enqueued": False, "ttn_modified": False}
+
+    def order_analytics(self, chat_id, owner_id, *, date_from=None, date_to=None, days=7):
+        """Exact owner/chat totals and Kyiv-day journal activity, never revenue.
+
+        Current attempts are queue counters; they are not a lifetime retry count.
+        Created means TTN issued, not delivered. Drafts keep their current state.
+        """
+        if type(days) is not int or not 1 <= days <= 31:
+            raise ValueError("Invalid analytics period")
+        where, values = self._order_filters(chat_id, owner_id, date_from=date_from, date_to=date_to)
+        zone = ZoneInfo("Europe/Kyiv")
+        today = datetime.fromtimestamp(self.clock(), zone).date()
+        dates = [today - timedelta(days=days - 1 - index) for index in range(days)]
+        buckets = []
+        bucket_values = []
+        for index, date in enumerate(dates):
+            start = datetime.combine(date, day_time.min, zone).timestamp()
+            end = datetime.combine(date + timedelta(days=1), day_time.min, zone).timestamp()
+            buckets.append("SUM(CASE WHEN updated>=? AND updated<? THEN 1 ELSE 0 END) AS day_" + str(index))
+            bucket_values.extend((start, end))
+        ttn = "COALESCE(" + self._order_value("result", "ttn") + ",'')"
+        attempts = "COALESCE(CAST(" + self._order_value("attempts") + " AS INTEGER),0)"
+        with self.lock:
+            state_rows = self.db.execute("SELECT state,COUNT(*) AS quantity FROM jobs WHERE " + where + " GROUP BY state", values).fetchall()
+            metrics = self.db.execute(
+                "SELECT COUNT(*) AS total,SUM(CASE WHEN " + ttn + "!='' THEN 1 ELSE 0 END) AS with_ttn,"
+                "SUM(" + attempts + ") AS current_attempts," + ",".join(buckets) + " FROM jobs WHERE " + where,
+                (*bucket_values, *values),
+            ).fetchone()
+        counts = {row["state"]: int(row["quantity"]) for row in state_rows}
+        return {
+            "counts": counts, "total": int(metrics["total"]),
+            "attention": sum(counts.get(state, 0) for state in ("invalid", "failed", "uncertain")),
+            "with_ttn": int(metrics["with_ttn"] or 0), "current_attempts": int(metrics["current_attempts"] or 0),
+            "daily_activity": [{"date": date.isoformat(), "count": int(metrics["day_" + str(index)] or 0)}
+                               for index, date in enumerate(dates)],
+            "timezone": "Europe/Kyiv", "date_basis": "updated_at",
+        }
 
     def list_orders(self, chat_id, owner_id, limit=10):
         with self.lock:

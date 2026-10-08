@@ -64,6 +64,23 @@ class OrderJournal:
                     profile_id TEXT NOT NULL, updated REAL NOT NULL,
                     PRIMARY KEY (chat_id, owner_id)
                 );
+                CREATE TABLE IF NOT EXISTS app_sessions (
+                    token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL CHECK(user_id>0),
+                    csrf_hash TEXT NOT NULL, created REAL NOT NULL,
+                    expires REAL NOT NULL CHECK(expires>created), revoked REAL
+                );
+                CREATE INDEX IF NOT EXISTS app_sessions_expiry ON app_sessions(expires);
+                CREATE TABLE IF NOT EXISTS app_auth_replays (
+                    replay_hash TEXT PRIMARY KEY, expires REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS app_pairings (
+                    pairing_hash TEXT PRIMARY KEY, code_hash TEXT NOT NULL UNIQUE,
+                    user_id INTEGER, approved_chat_id INTEGER, created REAL NOT NULL,
+                    expires REAL NOT NULL CHECK(expires>created), approved REAL, consumed REAL,
+                    CHECK((approved IS NULL AND user_id IS NULL AND approved_chat_id IS NULL)
+                          OR (approved IS NOT NULL AND user_id>0 AND approved_chat_id=user_id))
+                );
+                CREATE INDEX IF NOT EXISTS app_pairings_expiry ON app_pairings(expires);
             """)
             self._connection.commit()
 
