@@ -7,6 +7,7 @@ import threading
 
 from access_policy import AccessPolicy
 from sender_profiles import SenderProfiles
+from sender_access import read_only_sender_access
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
@@ -62,7 +63,7 @@ if not NOVA_POSHTA_API_KEY:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
-RELEASE_VERSION = "2026.10.08-smila-geo-rc4"
+RELEASE_VERSION = "2026.10.08-existing-key-discovery-rc5"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) if TELEGRAM_BOT_TOKEN else None
 np_client = NovaPoshtaClient(NOVA_POSHTA_API_KEY) if NOVA_POSHTA_API_KEY else None
 sender_profiles = SenderProfiles(np_client) if np_client else None
@@ -613,6 +614,7 @@ BOT_COMMANDS = (
     ("stats", "Статистика обработки заказов"),
     ("sender", "Выбрать профиль отправителя"),
     ("sendercheck", "Проверка основного отправителя без создания ТТН"),
+    ("senderaccess", "Посмотреть отправителей, доступных текущему ключу НП"),
     ("whoami", "Мой Telegram ID для настройки доступа"),
     ("track", "Проверить статус ТТН"),
     ("retry", "Повторить заказ или пересоздать удалённую ТТН"),
@@ -641,6 +643,7 @@ HELP_TEXT = (
     "Для исправления одного поля ответь на карточку: Телефон: +380... или Оценка: 1600.\n"
     "/sender — текущий профиль; /sender ID — переключить для будущих заказов.\n"
     "/sendercheck — безопасная проверка ФОП/кабинета НП без отправки.\n"
+    "/senderaccess — посмотреть отправителей, доступных имеющемуся ключу, без ТТН.\n"
     "/example — образец заказа.\n/menu — все команды."
 )
 _telegram_commands = []
@@ -846,6 +849,26 @@ def register_command_handlers(telegram_bot):
                 message, f"⚠️ Основной отправитель {primary}: " + str(exc)[:320]
                 + "\nТТН не создавалась."
             )
+
+    @telegram_bot.message_handler(commands=["senderaccess"])
+    def senderaccess_handler(message):
+        # Sender names are account information, never disclose in groups or
+        # to Telegram users outside the strictly configured operator list.
+        if not _is_allowed(message) or message.chat.type != "private":
+            return
+        if not np_client:
+            telegram_bot.reply_to(message, "API Новой Почты пока не настроен.")
+            return
+        try:
+            report = read_only_sender_access(np_client)
+        except NovaPoshtaError:
+            telegram_bot.reply_to(
+                message,
+                "⚠️ Не удалось прочитать отправителей по текущему ключу НП. "
+                "Накладные не создавались. Повтори позднее."
+            )
+            return
+        telegram_bot.reply_to(message, report)
 
     @telegram_bot.message_handler(commands=["track"])
     def track_handler(message):
