@@ -385,8 +385,11 @@ class NovaPoshtaClient:
                 for row in matches
                 if _clean_geo(row.get("Region")) == wanted_region
             ]
-            if district:
-                matches = district
+            if not district:
+                raise NovaPoshtaError(
+                    f"Район {region} не совпадает со справочником для населённого пункта {query}. Уточни адрес."
+                )
+            matches = district
 
         if wanted_type:
             type_aliases = {
@@ -401,8 +404,11 @@ class NovaPoshtaClient:
                     for row in matches
                     if _norm_text(row.get("SettlementTypeCode")) in allowed_codes
                 ]
-                if typed:
-                    matches = typed
+                if not typed:
+                    raise NovaPoshtaError(
+                        f"Тип населённого пункта {settlement_type} не подтверждён для {query}. Уточни адрес."
+                    )
+                matches = typed
 
         # Для доставки до двери предпочитаем населённые пункты,
         # где справочник прямо разрешает AddressDelivery.
