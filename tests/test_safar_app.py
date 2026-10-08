@@ -3,6 +3,7 @@ import copy
 import hashlib
 import hmac
 import json
+import os
 import time
 import unittest
 from urllib.parse import urlencode
@@ -431,6 +432,57 @@ class SafarAppTests(unittest.TestCase):
                            {"order_id": "job-cancelled", "reason": "unclaimed", "chat_id": USER})
         self.assertEqual(result.status_code, 422)
         self.assertEqual(self.get("/api/safar/returns").json["cases"], [])
+
+
+    def test_app_intake_disabled_by_default_and_rejects_wrong_actor_or_csrf(self):
+        request_id = "fixed-client-idempotency-00001"
+        payload = {"text": "ФИО: Іван Іваненко", "request_id": request_id, "chat_id": USER}
+        self.assertEqual(self.post("/api/safar/orders/intake", payload).status_code, 401)
+        self.login()
+        with patch.dict(os.environ, {"SAFAR_APP_AUTO_CREATE": "0"}):
+            self.assertEqual(self.post("/api/safar/orders/intake", payload).status_code, 503)
+        with patch.dict(os.environ, {"SAFAR_APP_AUTO_CREATE": "1"}):
+            self.assertEqual(self.post("/api/safar/orders/intake", payload, csrf=False).status_code, 403)
+            self.assertEqual(self.post("/api/safar/orders/intake", payload, origin="https://hostile.example").status_code, 403)
+            self.assertEqual(self.post("/api/safar/orders/intake", {**payload, "chat_id": 9876}).status_code, 403)
+            self.assertEqual(self.post("/api/safar/orders/intake", {**payload, "request_id": "bad"}).status_code, 422)
+            self.assertEqual(self.post("/api/safar/orders/intake", {**payload, "text": ""}).status_code, 422)
+        self.carrier.create_ttn.assert_not_called()
+
+    def test_app_intake_has_no_fake_telegram_ids_and_retries_are_idempotent(self):
+        self.login()
+        request_id = "fixed-client-idempotency-00002"
+        payload = {"text": "ФИО: Іван Іваненко\nТелефон: 0500000001\nГород: Одеса\nОтделение: 4\nОценка: 1600",
+                   "request_id": request_id, "chat_id": USER}
+        self.carrier.create_ttn.return_value = {"ttn": "20400000000011"}
+        with patch.dict(os.environ, {"SAFAR_APP_AUTO_CREATE": "1"}):
+            created = self.post("/api/safar/orders/intake", payload)
+            self.assertEqual(created.status_code, 202)
+            self.assertTrue(created.json["accepted"])
+            self.assertEqual(created.json["order"]["source"], "app")
+            self.assertEqual(created.json["order"]["state"], "collecting")
+            duplicate = self.post("/api/safar/orders/intake", payload)
+            self.assertEqual(duplicate.status_code, 200)
+            self.assertFalse(duplicate.json["accepted"])
+            self.assertEqual(created.json["order"]["id"], duplicate.json["order"]["id"])
+            self.assertEqual(self.post("/api/safar/orders/intake",
+                                       {**payload, "text": payload["text"] + " changed"}).status_code, 409)
+            key = created.json["order"]["id"]
+            stored = self.pipeline._job(key)
+            self.assertIsNone(stored["anchor_id"])
+            self.assertTrue(all("message_id" not in message for message in stored["messages"]))
+            self.assertTrue(self.pipeline.tick())
+            self.assertEqual(self.pipeline._job(key)["state"], "created")
+            self.assertEqual(self.pipeline._job(key)["result"]["ttn"], "20400000000011")
+            self.assertEqual(self.carrier.create_ttn.call_count, 1)
+            self.telegram.send_message.assert_not_called()
+            self.telegram.send_photo.assert_not_called()
+            self.assertEqual(self.post("/api/safar/orders/intake", payload).status_code, 200)
+            self.assertEqual(self.carrier.create_ttn.call_count, 1)
+            details = self.get("/api/safar/orders/" + key)
+            self.assertEqual(details.status_code, 200)
+            self.assertEqual(details.json["order"]["source"], "app")
+            self.assertIn("Іван Іваненко", details.json["order"]["source_text"])
 
 
 if __name__ == "__main__":
