@@ -112,3 +112,38 @@ def get_case(pipe, chat_id, owner_id, case_id):
     result["events"] = [{"at": e["at"], "event_type": e["event_type"]}
                         for e in events]
     return result
+
+
+def carrier_snapshot(pipe, chat_id, owner_id, case_id):
+    """Live, read-only outbound tracking for a registered return case.
+
+    Original sender is immutable: the currently selected sender must never
+    replace it. Carrier status does not establish warehouse receipt or refund.
+    """
+    from safar_operations import tracking
+
+    case = get_case(pipe, chat_id, owner_id, case_id)
+    if case is None:
+        return None
+    job = pipe.order_for_key(chat_id, owner_id, case["order_id"])
+    if job is None:
+        raise ValueError("The original order cannot be checked")
+    outbound = str((job.get("result") or {}).get("ttn") or "")
+    if outbound != case["outbound_ttn"]:
+        # A replacement TTN is not the original return reference.
+        raise ValueError("Historical TTN changed; verify return manually")
+    if (job.get("sender_profile") or "default") != case["sender_profile"]:
+        raise ValueError("Historical sender changed; verify return manually")
+    live = tracking(pipe, job)
+    return {
+        "outbound_ttn": case["outbound_ttn"],
+        "sender_profile": case["sender_profile"],
+        "status": live["status"],
+        "status_code": live["status_code"],
+        "phase": live["phase"],
+        "checked_at": live["checked_at"],
+        "cached": live["cached"],
+        "warehouse_state": case["warehouse_state"],
+        "finance_state": case["finance_state"],
+        "source": "nova_poshta",
+    }
