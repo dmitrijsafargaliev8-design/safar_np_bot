@@ -153,6 +153,7 @@ def public_order(job, *, include_detail=False):
             "notice": ("Зміни збережені як пропозиція. Чинна ТТН не змінена."
                        if proposal else ""),
             "history": [], "receipts": [],
+            "can_print": bool(os.getenv("SAFAR_NP_PDF_PRINT") == "1" and _ttn(outcome.get("ttn"))),
         })
     return base
 
@@ -578,6 +579,32 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
         except (ValueError, TypeError, OverflowError):
             abort(400)
         return jsonify(analytics=result, chat_id=chat)
+
+    @bp.get("/api/safar/orders/<path:key>/pdf")
+    def issued_ttn_pdf(key):
+        session = current_session()
+        if os.getenv("SAFAR_NP_PDF_PRINT") != "1":
+            abort(404)
+        chat = current_scope(session)
+        job = safe_job(session, chat, key)
+        if job.get("state") != "created":
+            abort(404)
+        receipt = job.get("result") if isinstance(job.get("result"), dict) else {}
+        number = _ttn(receipt.get("ttn"))
+        if not number:
+            abort(404)
+        raw_ref = receipt.get("ref")
+        doc_ref = raw_ref if isinstance(raw_ref, str) and re.fullmatch(
+            r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", raw_ref) else ""
+        try:
+            carrier = pipeline()._sender_client(job.get("sender_profile") or "default")
+            content = carrier.fetch_ttn_pdf(number, doc_ref=doc_ref)
+        except NovaPoshtaError:
+            abort(502)
+        if not isinstance(content, bytes) or not content.startswith(b"%PDF-"):
+            abort(502)
+        return no_store(send_file(io.BytesIO(content), mimetype="application/pdf",
+                                  as_attachment=True, download_name=f"SAFAR-TTN-{number}.pdf"))
 
     @bp.get("/api/safar/orders/<path:key>/photo/<int:index>")
     def photo(key, index):
