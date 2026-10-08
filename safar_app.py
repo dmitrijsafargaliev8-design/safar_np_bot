@@ -500,7 +500,9 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
                 # images to the source group or selected customer.
                 message = telegram_bot.send_photo(
                     session.user_id, file, caption="SAFAR / PRIVATE ORDER IMAGE")
-                sizes = getattr(message, "photo", None) or []
+                sizes = getattr(message, "photo", None)
+                if not isinstance(sizes, (list, tuple)) or not sizes:
+                    abort(502)
                 photos = []
                 for item in sizes:
                     file_id = getattr(item, "file_id", None)
