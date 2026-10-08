@@ -484,6 +484,27 @@ class SafarAppTests(unittest.TestCase):
             self.assertEqual(details.json["order"]["source"], "app")
             self.assertIn("Іван Іваненко", details.json["order"]["source_text"])
 
+    def test_app_replay_guard_new_request_id_does_not_block_legitimate_repeat_customer(self):
+        """Within two minutes exact text is one intake; phone/name never form global identity."""
+        text = "ФИО: Іван Іваненко\nТелефон: 0500000001\nГород: Одеса\nОтделение: 4\nОценка: 1600"
+        first, new = self.pipeline.ingest_app_text(USER, USER, text, "new-client-id-00000001")
+        self.assertTrue(new)
+        repeated, new = self.pipeline.ingest_app_text(
+            USER, USER, text.replace("\n", "\n  "), "new-client-id-00000002")
+        self.assertFalse(new)
+        self.assertEqual(first["key"], repeated["key"])
+        # Different item/order text from the same person is not a duplicate.
+        different, new = self.pipeline.ingest_app_text(
+            USER, USER, text + "\nОписание: другая пара", "new-client-id-00000003")
+        self.assertTrue(new)
+        self.assertNotEqual(first["key"], different["key"])
+        # Identical order well after the short replay window remains possible.
+        with patch.object(self.pipeline, "clock", return_value=first["created_at"] + 121):
+            later, new = self.pipeline.ingest_app_text(USER, USER, text, "new-client-id-00000004")
+        self.assertTrue(new)
+        self.assertNotEqual(first["key"], later["key"])
+        self.carrier.create_ttn.assert_not_called()
+
     def test_return_carrier_tracking_is_read_only_scoped_and_uses_original_sender(self):
         self.assertEqual(self.get("/api/safar/returns/not-found/tracking").status_code, 401)
         self.login()
