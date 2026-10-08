@@ -26,10 +26,13 @@ def _json(value):
 
 class OrderPipeline:
     def __init__(self, path, parser, client, bot, *, album_wait=3.0, clock=time.time, database_url=None,
-                 sender_clients=None):
+                 sender_clients=None, default_sender_profile="default"):
         self.parser, self.client, self.bot = parser, client, bot
         self.sender_clients = dict(sender_clients or {"default": client})
         self.sender_clients.setdefault("default", client)
+        if default_sender_profile not in self.sender_clients:
+            raise ValueError("Основной профиль отправителя не настроен.")
+        self.default_sender_profile = default_sender_profile
         self.album_wait, self.clock = album_wait, clock
         self.lock = threading.RLock()
         self.wakeup = threading.Event()
@@ -83,13 +86,13 @@ class OrderPipeline:
                 ).fetchone()["relation"]
                 if not exists:
                     if set(self.sender_clients) == {"default"}:
-                        return "default"  # legacy single-sender test database
+                        return self.default_sender_profile  # legacy single-sender test database
                     raise RuntimeError("Sender preference migration is required")
             row = self.db.execute(
                 "SELECT profile_id FROM sender_preferences WHERE chat_id=? AND owner_id=?",
                 (chat_id, owner_id),
             ).fetchone()
-        return row["profile_id"] if row else "default"
+        return row["profile_id"] if row else self.default_sender_profile
 
     def set_sender_preference(self, chat_id, owner_id, profile_id):
         """Persist future selection; never change already ingested orders."""
