@@ -108,3 +108,13 @@ button:focus-visible,textarea:focus-visible{outline:2px solid var(--volt);outlin
 
 .return-finance-state{display:flex;align-items:center;gap:9px;min-height:36px;padding:8px 11px;margin:0 0 12px;border:1px solid #504935;background:#201f1a;color:#edd9ac;border-radius:9px;font-size:12px;line-height:1.45}
 .return-finance-state svg{width:16px;height:16px}
+
+/* Private photo intake: no hidden file storage, explicit operator Telegram scope. */
+#intakeImage{display:block;width:100%;padding:13px 12px;border-radius:11px;
+ border:1px dashed #68856b;background:rgba(197,255,92,.045);color:#edf6eb;
+ font-size:13px;line-height:1.5}
+#intakeImage::file-selector-button{margin-right:14px;background:var(--volt);
+ border:0;border-radius:8px;padding:8px 14px;font-weight:750;color:#0d1209;
+ cursor:pointer}
+#intakeImage:focus-visible{outline:2px solid var(--volt);outline-offset:3px}
+#intakeImage:disabled{opacity:.52}
