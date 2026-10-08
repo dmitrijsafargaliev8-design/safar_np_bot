@@ -63,8 +63,8 @@ if not NOVA_POSHTA_API_KEY:
     logger.error("NOVA_POSHTA_API_KEY/NP_API_KEY is missing")
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
-RELEASE_VERSION = "2026.10.08-safar-app-v0.2-rc1"
+app.config["MAX_CONTENT_LENGTH"] = 3 * 1024 * 1024  # SAFAR PWA photo: max 2 MiB + multipart; route applies strict 2 MiB per file
+RELEASE_VERSION = "2026.10.09-safar-control-v0.3"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) if TELEGRAM_BOT_TOKEN else None
 np_client = NovaPoshtaClient(NOVA_POSHTA_API_KEY) if NOVA_POSHTA_API_KEY else None
 sender_profiles = SenderProfiles(np_client) if np_client else None
