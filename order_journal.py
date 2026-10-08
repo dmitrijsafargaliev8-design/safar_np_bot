@@ -64,12 +64,19 @@ class OrderJournal:
 
     def _new_postgres_connection(self):
         import psycopg
+        from psycopg.conninfo import conninfo_to_dict
         from psycopg.rows import dict_row
+        connection_options = {}
+        config = conninfo_to_dict(self.database_url)
+        if config.get("sslmode") == "verify-full" and not config.get("sslrootcert"):
+            from requests.certs import where
+            connection_options["sslrootcert"] = where()
         connection = psycopg.connect(
             self.database_url, autocommit=True, row_factory=dict_row,
             prepare_threshold=None, connect_timeout=10,
             application_name="safar_np_bot",
             keepalives_idle=30, keepalives_interval=10, keepalives_count=3,
+            **connection_options,
         )
         try:
             connection.execute(

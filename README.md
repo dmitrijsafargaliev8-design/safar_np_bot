@@ -28,7 +28,8 @@ missing database setting cannot silently enable local storage.
 
 For Supabase, copy the actual **session pooler** host from the project's Connect
 dialog and use port **5432**, user `safar_bot.PROJECT_REF`, and
-`sslmode=require` or `verify-full` with the database CA certificate. The
+`sslmode=verify-full`. The runtime uses the Requests CA bundle when no
+`sslrootcert` is specified; an explicit custom database CA remains supported. The
 transaction pooler on port 6543 is deliberately rejected because it cannot
 retain the worker's session lock. Only the lock holder recovers or processes
 the queue, including while old and new deployments overlap. Short journal
