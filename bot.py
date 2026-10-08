@@ -58,7 +58,7 @@ if not NOVA_POSHTA_API_KEY:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
-RELEASE_VERSION = "2026.10.08-orders-v2"
+RELEASE_VERSION = "2026.10.08-storage-v3"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) if TELEGRAM_BOT_TOKEN else None
 np_client = NovaPoshtaClient(NOVA_POSHTA_API_KEY) if NOVA_POSHTA_API_KEY else None
 
@@ -612,16 +612,27 @@ def get_pipeline():
     with _pipeline_lock:
         if _pipeline is None:
             from order_pipeline import OrderPipeline
-            _pipeline = OrderPipeline(os.getenv("STATE_DB_PATH", ".state/orders.sqlite3"), parse_order, np_client, bot)
+            database_url = os.getenv("STATE_DATABASE_URL", "").strip()
+            if os.getenv("STATE_REQUIRE_PERSISTENT") == "1" and not database_url:
+                raise RuntimeError("Persistent order storage is required")
+            _pipeline = OrderPipeline(
+                os.getenv("STATE_DB_PATH", ".state/orders.sqlite3"), parse_order, np_client, bot,
+                database_url=database_url or None,
+            )
         return _pipeline
 
 
 @app.before_request
 def start_order_processor():
     # Start after the Gunicorn fork, never in its master process.
-    pipeline = get_pipeline()
-    if pipeline and os.getenv("SAFAR_DISABLE_BACKGROUND") != "1":
-        pipeline.start()
+    try:
+        pipeline = get_pipeline()
+        if pipeline and os.getenv("SAFAR_DISABLE_BACKGROUND") != "1":
+            pipeline.start()
+    except Exception as exc:
+        # Fail closed: Telegram retries instead of losing an acknowledged order.
+        logger.error("Order storage unavailable: %s", type(exc).__name__)
+        return jsonify(error="order storage unavailable"), 503
 
 
 @app.get("/")
@@ -638,6 +649,8 @@ def health():
         telegram_configured=bool(TELEGRAM_BOT_TOKEN),
         nova_poshta_configured=bool(NOVA_POSHTA_API_KEY),
         webhook_secret_configured=bool(WEBHOOK_SECRET),
+        order_storage=_pipeline.db.backend if _pipeline else None,
+        order_storage_persistent=bool(_pipeline and _pipeline.db.persistent),
     )
 
 
@@ -704,13 +717,22 @@ def ready():
                 except Exception as diag_exc:
                     logger.warning("Could not list sender address options: %s", diag_exc)
 
-    overall = telegram_ok and nova_poshta_ok and sender_ok
+    storage_ok = False
+    try:
+        pipeline = get_pipeline()
+        if pipeline:
+            with pipeline.lock:
+                storage_ok = pipeline.db.ping()
+    except Exception as exc:
+        errors["order_storage"] = type(exc).__name__
+    overall = telegram_ok and nova_poshta_ok and sender_ok and storage_ok
     logger.info(
         "READY_CHECK telegram_ok=%s nova_poshta_ok=%s sender_ok=%s errors=%s",
         telegram_ok, nova_poshta_ok, sender_ok, errors
     )
     return jsonify(
         status="ready" if overall else "not_ready",
+        order_storage_ok=storage_ok,
         telegram_ok=telegram_ok,
         nova_poshta_ok=nova_poshta_ok,
         sender_ok=sender_ok,

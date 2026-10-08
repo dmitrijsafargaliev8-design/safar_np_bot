@@ -42,8 +42,11 @@ class PipelineTests(unittest.TestCase):
         for name in ("send_photo", "send_video", "send_document", "send_animation", "send_message"):
             getattr(self.bot, name).side_effect = sent
         self.bot.send_media_group.side_effect = lambda **kw: [sent() for _ in kw["media"]]
-        self.pipeline = OrderPipeline(":memory:", parse_order, self.client, self.bot, clock=lambda: self.now)
+        self.pipeline = self.make_pipeline(":memory:")
         self.addCleanup(self.pipeline.close)
+
+    def make_pipeline(self, path):
+        return OrderPipeline(path, parse_order, self.client, self.bot, clock=lambda: self.now)
 
     def drain(self):
         self.now += 4
@@ -222,12 +225,12 @@ class PipelineTests(unittest.TestCase):
     def test_journal_survives_worker_restart_without_second_ttn(self):
         with tempfile.TemporaryDirectory() as folder:
             path = str(Path(folder) / "orders.sqlite3")
-            pipeline = OrderPipeline(path, parse_order, self.client, self.bot, clock=lambda: self.now)
+            pipeline = self.make_pipeline(path)
             pipeline.ingest(message(1, caption=ORDER), 1)
             self.now += 4
             pipeline.tick()
             pipeline.close()
-            resumed = OrderPipeline(path, parse_order, self.client, self.bot, clock=lambda: self.now)
+            resumed = self.make_pipeline(path)
             try:
                 self.assertTrue(resumed.has_update(1))
                 self.assertEqual(resumed.list_orders(100, 99)[0]["result"]["ttn"], "20400000000001")
@@ -239,7 +242,7 @@ class PipelineTests(unittest.TestCase):
     def test_crash_during_save_recovers_to_uncertain(self):
         with tempfile.TemporaryDirectory() as folder:
             path = str(Path(folder) / "orders.sqlite3")
-            pipeline = OrderPipeline(path, parse_order, self.client, self.bot, clock=lambda: self.now)
+            pipeline = self.make_pipeline(path)
             pipeline.ingest(message(1, caption=ORDER), 1)
             with pipeline.lock, pipeline.db:
                 job = pipeline.list_orders(100, 99)[0]
@@ -249,7 +252,7 @@ class PipelineTests(unittest.TestCase):
                 pipeline.db.execute("INSERT INTO receipts VALUES (?,?,?,?)", (identity, "creating", None, self.now))
                 pipeline._write(job)
             pipeline.close()
-            resumed = OrderPipeline(path, parse_order, self.client, self.bot, clock=lambda: self.now)
+            resumed = self.make_pipeline(path)
             try:
                 self.now += 4
                 resumed.tick()
@@ -257,3 +260,21 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(resumed.list_orders(100, 99)[0]["state"], "uncertain")
             finally:
                 resumed.close()
+
+    def test_correction_received_during_error_notification_is_preserved(self):
+        original = message(1, caption=ORDER.replace("Оценка 1600", ""))
+        sent = self.bot.send_message.side_effect
+        def send_with_correction(**kwargs):
+            correction = message(2, text=ORDER, photo=False)
+            correction["reply_to_message"] = original
+            self.pipeline.ingest(correction, 2)
+            self.bot.send_message.side_effect = sent
+            return sent(**kwargs)
+        self.bot.send_message.side_effect = send_with_correction
+        self.pipeline.ingest(original, 1)
+        self.drain()
+        self.assertEqual(self.job()["state"], "collecting")
+        self.now += 4
+        self.pipeline.tick()
+        self.client.create_ttn.assert_called_once()
+        self.assertEqual(self.bot.send_photo.call_args.kwargs["photo"], "file-1")

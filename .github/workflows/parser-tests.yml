@@ -9,6 +9,22 @@ on:
 jobs:
   parser-regressions:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: safar_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: disposable-ci-admin
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d safar_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      SAFAR_TEST_DATABASE_URL: postgresql://safar_bot:disposable-ci-runtime@localhost:5432/safar_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -16,8 +32,15 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: pip install -r requirements.txt
+      - name: Provision disposable private order journal
+        env:
+          PGPASSWORD: disposable-ci-admin
+        run: |
+          psql -h localhost -U postgres -d safar_test -v ON_ERROR_STOP=1 -c "CREATE ROLE anon; CREATE ROLE authenticated;"
+          psql -h localhost -U postgres -d safar_test -v ON_ERROR_STOP=1 --single-transaction -f migrations/202610080001_private_order_journal.sql
+          psql -h localhost -U postgres -d safar_test -v ON_ERROR_STOP=1 -c "ALTER ROLE safar_bot WITH PASSWORD 'disposable-ci-runtime';"
       - name: Validate syntax
-        run: python -m compileall -q bot.py np_client.py order_pipeline.py tests
-      - name: Run parser, photo, album and retry tests (no real TTNs)
+        run: python -m compileall -q bot.py np_client.py order_pipeline.py order_journal.py tests
+      - name: Run SQLite and Postgres order flow tests (no real TTNs)
         run: python -m unittest discover -s tests -v
 

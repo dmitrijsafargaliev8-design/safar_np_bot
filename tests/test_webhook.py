@@ -79,3 +79,17 @@ class WebhookTests(unittest.TestCase):
         self.assertEqual(self.post({"update_id": 1, "message": retry}).status_code, 200)
         self.bot.send_message.assert_called_once()
         self.np.create_ttn.assert_not_called()
+
+    def test_journal_startup_failure_returns_retryable_http_status(self):
+        with patch.object(app_module, "get_pipeline", side_effect=RuntimeError("database unavailable")):
+            result = self.post({"update_id": 1, "message": message(1, caption=ORDER)})
+        self.assertEqual(result.status_code, 503)
+        self.assertFalse(self.pipeline.has_update(1))
+        self.np.create_ttn.assert_not_called()
+
+    def test_required_database_missing_never_uses_sqlite(self):
+        with patch.object(app_module, "_pipeline", None), patch.dict(
+                os.environ, {"STATE_DATABASE_URL": "", "STATE_REQUIRE_PERSISTENT": "1"}):
+            result = self.post({"update_id": 1, "message": message(1, caption=ORDER)})
+        self.assertEqual(result.status_code, 503)
+        self.np.create_ttn.assert_not_called()
