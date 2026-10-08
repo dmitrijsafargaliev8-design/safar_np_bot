@@ -277,6 +277,14 @@ test('offline state is explicit and protected data is never persisted by the PWA
   });
   expect(cached.some(url => url.includes('/api/'))).toBeFalsy();
   expect(cached.some(url => url.includes('/photo/'))).toBeFalsy();
+  // Install before the app's listener to model an OS/browser that misses the
+  // online event; manual recovery must work independently of that event.
+  await page.addInitScript(() => {
+    window.safarTestBlockOnline = true;
+    window.addEventListener('online', event => {
+      if (window.safarTestBlockOnline) event.stopImmediatePropagation();
+    });
+  });
   await page.reload();
   await expect(page.locator('[data-action="pair-start"]')).toBeVisible();
   await expect(page.locator('.order-row')).toHaveCount(0);
@@ -284,6 +292,16 @@ test('offline state is explicit and protected data is never persisted by the PWA
   await context.setOffline(false);
   await page.locator('[data-action="reconnect"]').click();
   await expect(page.locator('.offline-banner')).not.toBeVisible();
+  await expect(page.locator('.order-row').first()).toBeVisible();
+  await page.evaluate(() => { window.safarTestBlockOnline = false; });
+  // Also verify normal event-driven recovery actually refreshes private data.
+  await context.setOffline(true);
+  await expect(page.locator('#offlineBanner')).toBeVisible();
+  const refreshed = page.waitForResponse(response => response.url().includes('/api/safar/orders?') && response.ok());
+  await context.setOffline(false);
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await refreshed;
+  await expect(page.locator('#offlineBanner')).not.toBeVisible();
   await expect(page.locator('.order-row').first()).toBeVisible();
 });
 
