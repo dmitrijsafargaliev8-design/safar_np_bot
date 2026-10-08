@@ -4,6 +4,30 @@ from bot import parse_order
 
 
 class ExtendedParserTests(unittest.TestCase):
+    def test_name_after_branch_with_phone_on_separate_line(self):
+        for caption in (
+            "Великодолинське Маріїнський 5. Відділення 2. Іваненко Марія Петрівна.\n\n0500000001\n\nОценка 800",
+            "Великодолинське НП 2, Іваненко Марія Петрівна\n0500000001\nОцінка 800",
+            "Великодолинське\nВідділення №2. Іваненко Марія Петрівна.\n0500000001\nОценка 800",
+            "0500000001\nВеликодолинське НП 2. Іваненко Марія Петрівна.\nОценка 800",
+        ):
+            with self.subTest(caption=caption):
+                order = parse_order(caption)
+                self.assertEqual(order["full_name"], "Іваненко Марія Петрівна")
+                self.assertEqual(order["warehouse"], "2")
+                self.assertEqual(order["phone"], "380500000001")
+                self.assertEqual(order["cost"], 800)
+                self.assertEqual(order["cod_amount"], 0)
+                self.assertEqual(order["street"], "")
+
+    def test_periods_separating_inline_name_phone_and_cost(self):
+        order = parse_order("Великодолинське НП 2. Іваненко Марія Петрівна. 0500000001. Оценка 800")
+        self.assertEqual(order["full_name"], "Іваненко Марія Петрівна")
+
+    def test_branch_address_cannot_be_mistaken_for_missing_name(self):
+        with self.assertRaisesRegex(ValueError, "ФИО"):
+            parse_order("Великодолинське\nНП 2. вул. Маріїнська 5.\n0500000001\nОценка 800")
+
     def test_one_line_order_with_name_before_phone(self):
         order = parse_order("Одесса НП 142 Іваненко Марія +380 50 000 00 01 Оценка 1600")
         self.assertEqual(order["city"], "Одесса")

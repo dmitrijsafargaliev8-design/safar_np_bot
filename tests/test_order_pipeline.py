@@ -103,6 +103,60 @@ class PipelineTests(unittest.TestCase):
         saves = [call for call in client._call.call_args_list if call.args[:2] == ("InternetDocument", "save")]
         self.assertEqual(len(saves), 1)
 
+    def test_saved_inline_branch_name_retry_keeps_photo_and_creates_one_shipment(self):
+        caption = "Великодолинське Маріїнський 5. Відділення 2. Іваненко Марія Петрівна.\n\n0500000001\n\nОценка 800"
+        incoming = message(1, caption=caption)
+        incoming["forward_origin"] = {"type": "hidden_user", "sender_user_name": "Seller", "date": 1791300000}
+        # Reproduce a job already saved as invalid by the previous parser.
+        self.pipeline.parser = Mock(side_effect=ValueError("Не хватает полей: ФИО"))
+        self.pipeline.ingest(incoming, 1)
+        self.drain()
+        self.assertEqual(self.job()["state"], "invalid")
+        self.client.create_ttn.assert_not_called()
+        error_id = self.sent_id
+
+        client = NovaPoshtaClient("fake-test-api-key")
+        client.get_sender_info = Mock(return_value={"city_ref": "sender-city", "sender_ref": "sender",
+            "address_ref": "sender-wh", "contact_ref": "sender-contact", "phone": "380500000002"})
+        client.get_or_create_recipient = Mock(return_value=("recipient", "recipient-contact", "380500000001"))
+        def api(model, method, properties):
+            if (model, method) == ("Address", "getCities"):
+                if properties["FindByString"] == "Великодолинське":
+                    return [{"Ref": "velykodolynske-city", "Description": "Великодолинське"}]
+                return []
+            if (model, method) == ("Address", "getWarehouses"):
+                self.assertEqual(properties["CityRef"], "velykodolynske-city")
+                return [{"Ref": "wrong-wh12", "Number": "12"}, {"Ref": "correct-wh2", "Number": "2"}]
+            if (model, method) == ("InternetDocument", "save"):
+                self.assertEqual(properties["CityRecipient"], "velykodolynske-city")
+                self.assertEqual(properties["RecipientAddress"], "correct-wh2")
+                self.assertEqual(properties["ServiceType"], "WarehouseWarehouse")
+                self.assertEqual(properties["Cost"], "800")
+                self.assertNotIn("BackwardDeliveryData", properties)
+                return [{"IntDocNumber": "20400000000001"}]
+            self.fail("Unexpected API operation")
+        client._call = Mock(side_effect=api)
+        self.pipeline.client, self.pipeline.parser = client, parse_order
+        retry = message(2, text="/retry", photo=False)
+        retry["reply_to_message"] = {"message_id": error_id}
+        self.pipeline.ingest(retry, 2, retry=True)
+        self.drain()
+        self.assertEqual(self.job()["state"], "created")
+        self.assertTrue(self.job()["notified"])
+        client.get_or_create_recipient.assert_called_once_with(
+            "Іваненко Марія Петрівна", "380500000001", "velykodolynske-city", email="")
+        sent = self.bot.send_photo.call_args.kwargs
+        self.assertEqual(sent["photo"], "file-1")
+        self.assertIn("20400000000001", sent["caption"])
+        self.assertIn("Іваненко Марія Петрівна", sent["caption"])
+
+        repeat = copy.deepcopy(incoming)
+        repeat["message_id"] = 3
+        self.pipeline.ingest(repeat, 3)
+        self.drain()
+        saves = [call for call in client._call.call_args_list if call.args[:2] == ("InternetDocument", "save")]
+        self.assertEqual(len(saves), 1)
+
     def test_album_caption_on_second_photo_one_shipment_all_photos(self):
         self.pipeline.ingest(message(3, group="album"), 3)
         self.pipeline.ingest(message(2, caption=ORDER, group="album"), 2)
