@@ -13,7 +13,7 @@ def _safe_label(row):
     raw = row.get("Description") or row.get("DescriptionRu") or row.get("FirstName")
     if not isinstance(raw, str):
         return "Название не указано"
-    return re.sub(r"[\\r\\n\\t\\u200e\\u200f]", " ", raw).strip()[:72] or "Название не указано"
+    return re.sub(r"[\\r\n\\t\\u200e\\u200f]", " ", raw).strip()[:72] or "Название не указано"
 
 
 def read_only_sender_access(client, *, max_pages=3, max_display=12):
@@ -45,9 +45,9 @@ def read_only_sender_access(client, *, max_pages=3, max_display=12):
 
     if not unique:
         return (
-            "🔍 ДОСТУП ПО ТЕКУЩЕМУ КЛЮЧУ\\n"
-            "Новая Почта не вернула доступных отправителей.\\n"
-            "Это не подтверждает доступ к отдельному ФОП.\\n"
+            "🔍 ДОСТУП ПО ТЕКУЩЕМУ КЛЮЧУ\n"
+            "Новая Почта не вернула доступных отправителей.\n"
+            "Это не подтверждает доступ к отдельному ФОП.\n"
             "ТТН не создавалась."
         )
     names = list(unique.values())
@@ -64,4 +64,4 @@ def read_only_sender_access(client, *, max_pages=3, max_display=12):
         " через этот ключ не подтверждено.",
         "ТТН не создавалась. API-ключ нигде не показывается.",
     ))
-    return "\\n".join(lines)
+    return "\n".join(lines)
