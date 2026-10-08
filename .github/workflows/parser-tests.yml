@@ -37,7 +37,9 @@ jobs:
           PGPASSWORD: disposable-ci-admin
         run: |
           psql -h localhost -U postgres -d safar_test -v ON_ERROR_STOP=1 -c "CREATE ROLE anon; CREATE ROLE authenticated;"
-          psql -h localhost -U postgres -d safar_test -v ON_ERROR_STOP=1 --single-transaction -f migrations/202610080001_private_order_journal.sql
+          for migration in migrations/*.sql; do
+            psql -h localhost -U postgres -d safar_test -v ON_ERROR_STOP=1 --single-transaction -f "$migration"
+          done
           psql -h localhost -U postgres -d safar_test -v ON_ERROR_STOP=1 -c "ALTER ROLE safar_bot WITH PASSWORD 'disposable-ci-runtime';"
       - name: Validate syntax
         run: python -m compileall -q bot.py np_client.py order_pipeline.py order_journal.py tests

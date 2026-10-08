@@ -35,11 +35,20 @@ class PostgresPipelineTests(fixtures.PipelineTests):
         self.assertFalse(row["rolsuper"])
         self.assertFalse(row["rolbypassrls"])
         enabled = self.pipeline.db.execute(
-            "SELECT count(*) AS enabled FROM pg_class c "
+            "SELECT c.relname FROM pg_class c "
             "JOIN pg_namespace n ON n.oid=c.relnamespace "
             "WHERE n.nspname='safar_orders' AND c.relrowsecurity"
-        ).fetchone()["enabled"]
-        self.assertEqual(enabled, 4)
+        ).fetchall()
+        tables = {row["relname"] for row in enabled}
+        self.assertTrue({"updates", "jobs", "messages", "receipts"}.issubset(tables))
+        self.assertTrue({"app_sessions", "app_auth_replays", "app_pairings"}.issubset(tables))
+        for table in ("app_sessions", "app_auth_replays", "app_pairings"):
+            for role in ("anon", "authenticated"):
+                access = self.pipeline.db.execute(
+                    "SELECT has_table_privilege(?, ?, 'SELECT,INSERT,UPDATE,DELETE') AS allowed",
+                    (role, "safar_orders." + table),
+                ).fetchone()["allowed"]
+                self.assertFalse(access)
         for role in ("anon", "authenticated"):
             access = self.pipeline.db.execute(
                 "SELECT has_schema_privilege(?, 'safar_orders', 'USAGE') AS allowed", (role,)

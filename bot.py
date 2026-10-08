@@ -14,6 +14,7 @@ from flask import Flask, jsonify, request
 import telebot
 
 from np_client import NovaPoshtaClient, NovaPoshtaError, normalize_phone
+from order_pipeline import OrderCorrectionConflict
 
 load_dotenv()
 
@@ -63,7 +64,7 @@ if not NOVA_POSHTA_API_KEY:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
-RELEASE_VERSION = "2026.10.08-safar-app-v0.1-rc1"
+RELEASE_VERSION = "2026.10.08-safar-app-v0.2-rc1"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) if TELEGRAM_BOT_TOKEN else None
 np_client = NovaPoshtaClient(NOVA_POSHTA_API_KEY) if NOVA_POSHTA_API_KEY else None
 sender_profiles = SenderProfiles(np_client) if np_client else None
@@ -81,6 +82,15 @@ def _is_allowed(message, *, actor_id=None) -> bool:
     sender = getattr(message, "from_user", None)
     user_id = actor_id if actor_id is not None else getattr(sender, "id", None)
     return _access_permits(getattr(chat, "id", None), user_id)
+
+
+def _app_access_permits(chat_id, user_id):
+    """The app always requires explicit human AND chat allowlists.
+
+    Legacy webhook rollout settings remain unchanged. Empty lists must never
+    turn the browser API into a public customer-data endpoint.
+    """
+    return bool(ACCESS_POLICY.users and ACCESS_POLICY.chats) and _access_permits(chat_id, user_id)
 
 
 def _canonical_key(raw: str) -> str:
@@ -674,6 +684,26 @@ def register_command_handlers(telegram_bot):
     def app_handler(message):
         if not _is_allowed(message) or message.chat.type != "private":
             return
+        parts = (message.text or "").split()
+        if len(parts) > 1:
+            if len(parts) != 2 or not _app_access_permits(message.chat.id, message.from_user.id):
+                telegram_bot.reply_to(message, "Подключение устройства недоступно. Проверь разрешения SAFAR APP.")
+                return
+            # Only the verified signed webhook may approve the browser's code.
+            # The browser also needs its original 256-bit device secret.
+            auth = app.extensions.get("safar_auth")
+            try:
+                approved = bool(auth and auth.approve_pairing(parts[1], message.chat.id, message.from_user.id))
+            except Exception:
+                logger.warning("SAFAR device pairing unavailable")
+                approved = False
+            telegram_bot.reply_to(
+                message,
+                ("Устройство подтверждено. Вернись в браузер и нажми «Проверить подтверждение».\n"
+                 "Если ты не запрашивал этот вход, не подтверждай чужие коды.") if approved else
+                "Код недействителен или истёк. Запроси новый код в SAFAR APP.",
+            )
+            return
         if not PUBLIC_BASE_URL.startswith("https://"):
             telegram_bot.reply_to(message, "SAFAR APP ожидает HTTPS-адрес Render.")
             return
@@ -1240,6 +1270,13 @@ def webhook():
             else:
                 try:
                     pipeline.ingest(message, update_id, retry=True)
+                except OrderCorrectionConflict:
+                    bot.send_message(
+                        chat_id,
+                        "Правка из SAFAR APP устарела или создание ТТН ещё не подтверждено. "
+                        "Обнови карточку в приложении и проверь правки. ТТН не изменена.",
+                    )
+                    pipeline.remember_update(update_id)
                 except ValueError:
                     bot.send_message(chat_id, "Заказ для повтора не найден. Перешли исходный заказ с фото.")
                     pipeline.remember_update(update_id)
@@ -1342,14 +1379,14 @@ if __name__ == "__main__":
 
 
 
-# SAFAR APP is an isolated read-only Blueprint using the existing order journal.
-# It never adds shipment mutation routes or changes the signed webhook.
+# SAFAR APP uses the same private journal; app corrections are staged only.
 from safar_app import create_safar_blueprint
 
 app.register_blueprint(create_safar_blueprint(
     telegram_token=TELEGRAM_BOT_TOKEN,
     webhook_secret=WEBHOOK_SECRET,
-    allowed=_access_permits,
+    allowed=_app_access_permits,
     get_pipeline=get_pipeline,
     telegram_bot=bot,
+    sender_registry=sender_profiles,
 ))
