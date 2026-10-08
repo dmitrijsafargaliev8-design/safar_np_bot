@@ -65,12 +65,19 @@ RELEASE_VERSION = "2026.10.08-operations-v2-rc1"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) if TELEGRAM_BOT_TOKEN else None
 np_client = NovaPoshtaClient(NOVA_POSHTA_API_KEY) if NOVA_POSHTA_API_KEY else None
 
+def _access_permits(chat_id, user_id):
+    """Apply both legacy chat restrictions and the stricter actor policy."""
+    if ALLOWED_CHAT_IDS and chat_id not in ALLOWED_CHAT_IDS:
+        return False
+    return ACCESS_POLICY.permits(chat_id, user_id)
+
+
 def _is_allowed(message, *, actor_id=None) -> bool:
     """Validate both chat and the real human initiating a command/callback."""
     chat = getattr(message, "chat", None)
     sender = getattr(message, "from_user", None)
     user_id = actor_id if actor_id is not None else getattr(sender, "id", None)
-    return ACCESS_POLICY.permits(getattr(chat, "id", None), user_id)
+    return _access_permits(getattr(chat, "id", None), user_id)
 
 
 def _canonical_key(raw: str) -> str:
@@ -573,9 +580,8 @@ _telegram_commands = []
 def register_command_handlers(telegram_bot):
     @telegram_bot.message_handler(commands=["whoami"])
     def whoami_handler(message):
-        # Bootstrap command: reveals only the requester's own identifiers,
-        # including when strict mode blocks other commands.
-        if message.chat.type not in {"private", "group", "supergroup"}:
+        # Configure allowlists before strict mode. Never respond in blocked chats.
+        if not _is_allowed(message) or message.chat.type not in {"private", "group", "supergroup"}:
             return
         telegram_bot.reply_to(
             message,
@@ -1063,14 +1069,7 @@ def webhook():
             return jsonify(ok=True, ignored=True)
         text = message.get("text") or ""
         command = text.split(None, 1)[0].split("@", 1)[0] if text.startswith("/") else ""
-        if not ACCESS_POLICY.permits(chat_id, (message.get("from") or {}).get("id")):
-            if command == "/whoami" and (message.get("chat") or {}).get("type") in {"private", "group", "supergroup"}:
-                bot.send_message(
-                    chat_id,
-                    f"Твой Telegram User ID: {(message.get('from') or {}).get('id')}\n"
-                    f"Chat ID: {chat_id}\n\n"
-                    "Эти ID нужны для настройки разрешённых пользователей и чатов.",
-                )
+        if not _access_permits(chat_id, (message.get("from") or {}).get("id")):
             pipeline.remember_update(update_id)
             return jsonify(ok=True, ignored=True)
         if command == "/retry":
