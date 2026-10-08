@@ -6,6 +6,7 @@ validated proposals; the app never invokes shipment creation or deletion.
 from __future__ import annotations
 
 import io
+import hmac
 import math
 import os
 import re
@@ -24,6 +25,7 @@ from safar_auth import (
     require_same_origin, verify_telegram_init_data,
 )
 from safar_operations import sender_summary, select_sender, tracking
+from safar_monitor import monitor_pass, order_timeline, ready as monitor_ready
 from safar_returns import create_case, get_case, list_cases, carrier_snapshot, link_verified_easy_return, confirm_warehouse_receipt
 
 
@@ -511,6 +513,31 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
         if snapshot is None:
             abort(404)
         return jsonify(tracking=snapshot)
+
+    @bp.post("/api/internal/safar/sync")
+    def trusted_carrier_sync():
+        """Optional cron trigger, denied unless configured and secret-authenticated."""
+        secret = os.getenv("SAFAR_SYNC_SECRET") or ""
+        if os.getenv("SAFAR_SYNC_ENABLED") != "1" or not 32 <= len(secret) <= 128:
+            abort(404)
+        submitted = request.headers.get("X-Safar-Sync-Token") or ""
+        if len(submitted) > 128 or not hmac.compare_digest(submitted, secret):
+            abort(403)
+        pipe = pipeline()
+        if not monitor_ready(pipe):
+            abort(503)
+        return no_store(jsonify(ok=True, monitoring=monitor_pass(pipe)))
+
+    @bp.get("/api/safar/orders/<path:key>/carrier-events")
+    def carrier_events(key):
+        """Event history is scoped to the same private job as the original order."""
+        session = current_session()
+        chat = current_scope(session)
+        job = safe_job(session, chat, key)
+        if not monitor_ready(pipeline()):
+            abort(503)
+        return no_store(jsonify(order_id=job["key"],
+                                timeline=order_timeline(pipeline(), chat, session.user_id, job["key"])))
 
     @bp.get("/api/safar/orders")
     def orders():
