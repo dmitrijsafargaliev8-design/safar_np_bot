@@ -616,7 +616,7 @@ document.addEventListener('change',async event => {
  if (event.target.id === 'senderFilter') view.sender = event.target.value;
  else if (event.target.id === 'dateFilter') view.period = event.target.value;
  else if (event.target.id === 'sortFilter') view.sort = event.target.value;
- else if (event.target.id === 'scopeFilter') { sessionEpoch++; view.chatId = Number(event.target.value); view.orders = []; view.detailCache = {}; view.tracking = {}; view.radarErrors = {}; view.senders = null; view.analytics = null; view.returnCases = []; view.returnTracking = {}; view.returnTrackingErrors = {}; view.selected = null; view.lastSync = null; await Promise.allSettled([fetchOrders(),fetchSenders(),fetchAnalytics()]); return; }
+ else if (event.target.id === 'scopeFilter') { sessionEpoch++; view.chatId = Number(event.target.value); view.orders = []; view.detailCache = {}; view.tracking = {}; view.carrierEvents = {}; view.radarErrors = {}; view.senders = null; view.analytics = null; view.returnCases = []; view.returnTracking = {}; view.returnTrackingErrors = {}; view.selected = null; view.lastSync = null; await Promise.allSettled([fetchOrders(),fetchSenders(),fetchAnalytics()]); return; }
  else return;
  view.orders = []; await fetchOrders();
 });
