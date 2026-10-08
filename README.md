@@ -22,7 +22,7 @@ Security rollout on the existing Render service:
    `/whoami`, `/queue`, `/stats`, one existing order, and an unauthorized actor.
    Do NOT create a live test shipment; mock APIs or an already-created order suffice.
 
-The strict flag is intentionally opt-in so the PR can be reviewed without
+The legacy one-time direct shipment URL is retired in this branch and cannot create\na live TTN even when its old environment switch remains set.\n\nThe strict flag is intentionally opt-in so the PR can be reviewed without
 interrupting the currently operating service. **Before enabling strict mode,
 orders are not protected by user allowlisting unless `ALLOWED_USER_IDS` is
 already configured.** Leaving both ID lists empty leaves legacy open access.
@@ -130,5 +130,4 @@ instance, plus overlapping deployment, transaction rollback and private-role
 access scenarios. Local Postgres tests run only if `SAFAR_TEST_DATABASE_URL`
 points to a dedicated disposable test database; never use a production URL.
 `/health` reports the release and worker; `/ready` checks Telegram, Nova Poshta
-and sender configuration. The temporary one-time shipment endpoint is disabled
-unless `ENABLE_ONE_TIME_TTN_OPS=1` is explicitly configured.
+and sender configuration. The former `/ops/create-one-time-ttn` endpoint is permanently retired (HTTP 410),\nbecause in-memory idempotency could create duplicate shipment numbers after a restart.\nLegacy `ENABLE_ONE_TIME_TTN_OPS` no longer re-enables it; use the durable Telegram journal.
