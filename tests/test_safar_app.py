@@ -132,7 +132,7 @@ class SafarAppTests(unittest.TestCase):
         self.assertEqual(res.data, b"\xff\xd8FAKE_JPEG")
         self.assertIn("no-store", res.headers["Cache-Control"])
         self.assertNotIn(TOKEN, res.data.decode("latin1"))
-        self.assertNotIn(TOKEN, json.dumps(res.headers))
+        self.assertNotIn(TOKEN, str(dict(res.headers)))
         self.telegram.get_file.assert_called_once_with("secret-photo-id")
         self.assertIn("api.telegram.org/file/bot", remote.call_args.args[0])
         self.assertEqual(self.client.get("/api/safar/orders/job-other/photo/0", base_url=BASE).status_code, 404)
