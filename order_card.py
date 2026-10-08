@@ -42,7 +42,7 @@ def format_order_card(order: dict, result: dict, photo_count: int, *,
     if result.get("estimated_delivery_date"):
         text += f"\n🚚 Доставка: {result['estimated_delivery_date']}"
     if duplicate:
-        text += "\n♻️ Заказ уже обработан — новая ТТН не создавалась."
+        text += "\n♻️ Заказ уже обработан — повторная ТТН не создавалась."
     if replaced_ttn:
         text += f"\n♻️ Предыдущая ТТН {replaced_ttn} удалена в НП. Создана новая."
     if notice:
