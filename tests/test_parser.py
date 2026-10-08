@@ -61,10 +61,10 @@ class InlineOblastAndCityTests(unittest.TestCase):
 
     def test_real_smila_cherkasy_order_fields_do_not_bleed(self):
         raw = (
-            "Кушнір Катерина Василівна\\n"
-            "м. Сміла, Черкаська обл\\n"
-            "Відділення 4\\n"
-            "0630451047\\n\\n"
+            "Кушнір Катерина Василівна\n"
+            "м. Сміла, Черкаська обл\n"
+            "Відділення 4\n"
+            "0630451047\n\n"
             "Оценка 3850"
         )
         order = parse_order(raw)
@@ -87,8 +87,8 @@ class InlineOblastAndCityTests(unittest.TestCase):
         ):
             with self.subTest(location=location):
                 raw = (
-                    "Кушнір Катерина Василівна\\n"
-                    + location + "\\nВідділення 4\\n0630451047\\nОценка 3850"
+                    "Кушнір Катерина Василівна\n"
+                    + location + "\nВідділення 4\n0630451047\nОценка 3850"
                 )
                 parsed = parse_order(raw)
                 self.assertEqual(parsed["city"], "Сміла")
@@ -97,18 +97,18 @@ class InlineOblastAndCityTests(unittest.TestCase):
 
     def test_separate_city_and_oblast_lines_still_work(self):
         order = parse_order(
-            "Кушнір Катерина Василівна\\n"
-            "Черкаська область\\nм. Сміла\\n"
-            "Відділення 4\\n0630451047\\nОценка 3850"
+            "Кушнір Катерина Василівна\n"
+            "Черкаська область\nм. Сміла\n"
+            "Відділення 4\n0630451047\nОценка 3850"
         )
         self.assertEqual(order["city"], "Сміла")
         self.assertEqual(order["area"], "Черкаська")
 
     def test_geo_directory_confirms_exact_city_area_and_warehouse(self):
         order = parse_order(
-            "Кушнір Катерина Василівна\\n"
-            "м. Сміла, Черкаська обл\\n"
-            "Відділення 4\\n0630451047\\nОценка 3850"
+            "Кушнір Катерина Василівна\n"
+            "м. Сміла, Черкаська обл\n"
+            "Відділення 4\n0630451047\nОценка 3850"
         )
         client = NovaPoshtaClient("test-key-not-real")
         def fake_api(model, method, props):
