@@ -205,3 +205,48 @@ def link_verified_easy_return(pipe, chat_id, owner_id, case_id, reverse_ttn):
             "SELECT * FROM return_cases WHERE id=?", (case_id,)
         ).fetchone()
         return _public(updated), True
+
+
+def confirm_warehouse_receipt(pipe, chat_id, owner_id, case_id, number, acknowledged):
+    """Human-attested physical receipt, distinct from a carrier status.
+
+    Only an authorized operator can make this transition. Neither receiving
+    stock nor ordering a return is inferred from transport tracking; financial
+    reconciliation remains unreviewed until independently confirmed.
+    """
+    if acknowledged is not True or not isinstance(number, str) or not re.fullmatch(r"\d{14}", number):
+        raise ValueError("An explicit TTN-matched warehouse confirmation is required")
+    if not isinstance(case_id, str) or not re.fullmatch(r"[0-9a-f]{32}", case_id):
+        return None
+    if not available(pipe):
+        raise RuntimeError("Returns migration not installed")
+    with pipe.lock, pipe.db:
+        row = pipe.db.execute(
+            "SELECT * FROM return_cases WHERE id=? AND chat_id=? AND owner_id=?",
+            (case_id, chat_id, owner_id),
+        ).fetchone()
+        if row is None:
+            return None
+        if number not in {row["outbound_ttn"], row["reverse_ttn"]}:
+            raise ValueError("The scanned/entered TTN does not belong to this case")
+        if row["warehouse_state"] == "received":
+            return _public(row), False
+        if row["warehouse_state"] != "not_received":
+            raise ValueError("Unsupported warehouse state; resolve manually")
+        now = time.time()
+        pipe.db.execute(
+            "UPDATE return_cases SET warehouse_state=?,updated=? WHERE id=?",
+            ("received", now, case_id),
+        )
+        pipe.db.execute(
+            "INSERT INTO return_events (id,case_id,actor_id,at,event_type,details) "
+            "VALUES (?,?,?,?,?,?)",
+            (uuid.uuid4().hex, case_id, owner_id, now, "warehouse_received",
+             json.dumps({"source": "operator", "matched_ttn": number,
+                         "explicit_confirmation": True},
+                        ensure_ascii=False, separators=(",", ":"))),
+        )
+        updated = pipe.db.execute(
+            "SELECT * FROM return_cases WHERE id=?", (case_id,)
+        ).fetchone()
+        return _public(updated), True
