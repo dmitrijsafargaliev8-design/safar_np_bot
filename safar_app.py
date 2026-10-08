@@ -28,7 +28,7 @@ from safar_auth import (
 from safar_operations import sender_summary, select_sender, tracking
 from safar_monitor import monitor_pass, order_timeline, ready as monitor_ready
 from safar_ocr import extract_text, OcrUnavailable
-from safar_returns import create_case, get_case, list_cases, carrier_snapshot, link_verified_easy_return, confirm_warehouse_receipt
+from safar_returns import create_case, get_case, list_cases, carrier_snapshot, link_verified_easy_return, confirm_warehouse_receipt, record_return_expense, ReturnExpenseConflict
 
 
 STATIC_ROOT = Path(__file__).resolve().parent / "safar_web"
@@ -564,6 +564,28 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
         if case is None:
             abort(404)
         return jsonify(case=case)
+
+    @bp.post("/api/safar/returns/<case_id>/expense")
+    def add_return_expense(case_id):
+        """Operator-reported UAH expense; not a bank or NP settlement."""
+        session = current_session()
+        require_same_origin(request)
+        require_csrf(request, session)
+        body = json_body()
+        chat = current_scope(session, body)
+        try:
+            case, changed = record_return_expense(
+                pipeline(), chat, session.user_id, case_id, body.get("amount"),
+                body.get("category"), body.get("reference"),
+                body.get("request_id"), body.get("acknowledged"),
+            )
+        except ReturnExpenseConflict:
+            abort(409)
+        except (ValueError, TypeError):
+            abort(422)
+        if case is None:
+            abort(404)
+        return jsonify(case=case, changed=changed)
 
     @bp.post("/api/safar/returns/<case_id>/warehouse-receipt")
     def warehouse_receipt(case_id):
