@@ -659,6 +659,48 @@ class SafarAppTests(unittest.TestCase):
         self.assertEqual(confirmed.json["case"]["warehouse_state"], "received")
         self.assertEqual(confirmed.json["case"]["finance_state"], "unreviewed")
 
+    def test_return_expenses_are_operator_reported_precise_scoped_and_idempotent(self):
+        self.login()
+        created = self.post("/api/safar/returns", {
+            "order_id": "job-alpha", "reason": "refused_by_recipient", "chat_id": USER})
+        case_id = created.json["case"]["id"]
+        url = f"/api/safar/returns/{case_id}/expense"
+        payload = {
+            "chat_id": USER, "amount": "120.50", "category": "return_delivery",
+            "reference": "receipt-108", "request_id": "return-expense-idempotency-01",
+            "acknowledged": True,
+        }
+        self.assertEqual(self.post(url, payload, csrf=False).status_code, 403)
+        self.assertEqual(self.post(url, {**payload, "chat_id": GROUP}).status_code, 404)
+        self.assertEqual(self.post(url, {**payload, "amount": "-100"}).status_code, 422)
+        self.assertEqual(self.post(url, {**payload, "amount": "NaN"}).status_code, 422)
+        self.assertEqual(self.post(url, {**payload, "amount": "10.999"}).status_code, 422)
+        self.assertEqual(self.post(url, {**payload, "acknowledged": False}).status_code, 422)
+        self.assertEqual(self.post(url, {**payload, "reference": ""}).status_code, 422)
+        first = self.post(url, payload)
+        self.assertEqual(first.status_code, 200)
+        self.assertTrue(first.json["changed"])
+        self.assertEqual(first.json["case"]["expense_total_kopeks"], 12050)
+        self.assertEqual(first.json["case"]["finance_state"], "unreviewed")
+        second = self.post(url, payload)
+        self.assertEqual(second.status_code, 200)
+        self.assertFalse(second.json["changed"])
+        self.assertEqual(second.json["case"]["expense_total_kopeks"], 12050)
+        self.assertEqual(
+            self.post(url, {**payload, "amount": "121.00"}).status_code, 409)
+        more = self.post(url, {**payload, "amount": "9.05", "category": "storage",
+                              "request_id": "return-expense-idempotency-02"})
+        self.assertEqual(more.status_code, 200)
+        self.assertEqual(more.json["case"]["expense_total_kopeks"], 12955)
+        listed = self.get("/api/safar/returns")
+        self.assertEqual(listed.json["cases"][0]["expense_total_kopeks"], 12955)
+        details = self.get(f"/api/safar/returns/{case_id}")
+        self.assertEqual(details.json["case"]["expense_total_kopeks"], 12955)
+        self.assertEqual([e["event_type"] for e in details.json["case"]["events"]],
+                         ["case_opened", "return_expense", "return_expense"])
+        self.carrier.create_ttn.assert_not_called()
+        self.carrier.get_ttn_status.assert_not_called()
+
     def test_private_scheduler_disabled_unless_authenticated_and_migrated(self):
         url = "/api/internal/safar/sync"
         with patch.dict(os.environ, {"SAFAR_SYNC_ENABLED": "0",
