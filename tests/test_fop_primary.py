@@ -3,6 +3,7 @@ import json
 import os
 import unittest
 from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 from np_client import NovaPoshtaError
 from sender_profiles import SenderProfiles
@@ -59,6 +60,13 @@ class FopPrimaryTests(unittest.TestCase):
         client.create_ttn = Mock(return_value={"ttn": "20400000000002"})
         client.is_ttn_deleted = Mock(return_value=False)
         bot = Mock()
+        sent_id = [1000]
+        def sent(**kw):
+            sent_id[0] += 1
+            return SimpleNamespace(message_id=sent_id[0])
+        for name in ("send_photo", "send_video", "send_document", "send_animation", "send_message"):
+            getattr(bot, name).side_effect = sent
+        bot.send_media_group.side_effect = lambda **kw: [sent() for _ in kw["media"]]
         now = [1791400000.0]
         pipe = OrderPipeline(":memory:", parse_order, self.legacy, bot, clock=lambda: now[0],
                              sender_clients=p.clients,
