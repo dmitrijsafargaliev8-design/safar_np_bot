@@ -484,6 +484,29 @@ class SafarAppTests(unittest.TestCase):
             self.assertEqual(details.json["order"]["source"], "app")
             self.assertIn("Іван Іваненко", details.json["order"]["source_text"])
 
+    def test_return_carrier_tracking_is_read_only_scoped_and_uses_original_sender(self):
+        self.assertEqual(self.get("/api/safar/returns/not-found/tracking").status_code, 401)
+        self.login()
+        opened = self.post("/api/safar/returns",
+                           {"order_id": "job-alpha", "reason": "unclaimed", "chat_id": USER})
+        self.assertEqual(opened.status_code, 201)
+        case = opened.json["case"]
+        self.pipeline.set_sender_preference(USER, USER, "other")
+        tracking = self.get("/api/safar/returns/" + case["id"] + "/tracking")
+        self.assertEqual(tracking.status_code, 200)
+        snapshot = tracking.json["tracking"]
+        self.assertEqual(snapshot["outbound_ttn"], SAMPLE["result"]["ttn"])
+        self.assertEqual(snapshot["source"], "nova_poshta")
+        self.assertEqual(snapshot["status_code"], "1")
+        self.assertEqual(snapshot["warehouse_state"], "not_received")
+        self.assertEqual(snapshot["finance_state"], "unreviewed")
+        self.assertEqual(snapshot["sender_profile"], "default")
+        self.carrier.get_ttn_status.assert_called_once()
+        self.other_carrier.get_ttn_status.assert_not_called()
+        self.assertEqual(self.get("/api/safar/returns/" + case["id"] + "/tracking?chat_id=" + str(GROUP)).status_code, 404)
+        self.assertEqual(len(self.get("/api/safar/returns").json["cases"]), 1)
+        self.assertEqual(len(self.get("/api/safar/returns/" + case["id"]).json["case"]["events"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
