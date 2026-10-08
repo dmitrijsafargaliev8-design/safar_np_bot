@@ -108,6 +108,37 @@ class OrderJournal:
                 );
                 CREATE INDEX IF NOT EXISTS return_events_case_time
                     ON return_events(case_id,at,id);
+                CREATE TABLE IF NOT EXISTS tracking_snapshots (
+                    order_key TEXT PRIMARY KEY,
+                    chat_id INTEGER NOT NULL,
+                    owner_id INTEGER NOT NULL,
+                    ttn TEXT NOT NULL,
+                    sender_profile TEXT NOT NULL,
+                    status_code TEXT NOT NULL DEFAULT '',
+                    status_text TEXT NOT NULL DEFAULT '',
+                    phase TEXT NOT NULL DEFAULT '',
+                    checked_at REAL NOT NULL DEFAULT 0,
+                    attempted_at REAL NOT NULL DEFAULT 0,
+                    error_code TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS tracking_snapshots_scope
+                    ON tracking_snapshots(chat_id,owner_id,checked_at);
+                CREATE TABLE IF NOT EXISTS tracking_events (
+                    id TEXT PRIMARY KEY,
+                    order_key TEXT NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    owner_id INTEGER NOT NULL,
+                    ttn TEXT NOT NULL,
+                    sender_profile TEXT NOT NULL,
+                    at REAL NOT NULL,
+                    status_code TEXT NOT NULL,
+                    status_text TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    source TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS tracking_events_order_time
+                    ON tracking_events(order_key,at DESC);
+
             """)
             self._connection.commit()
 
