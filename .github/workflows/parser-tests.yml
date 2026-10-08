@@ -1,0 +1,22 @@
+name: SAFAR NP BOT parser tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  parser-regressions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Validate syntax
+        run: python -m compileall -q bot.py np_client.py tests
+      - name: Run order parser tests (no real TTNs)
+        run: python -m unittest discover -s tests -v
