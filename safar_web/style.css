@@ -57,3 +57,20 @@ button:focus-visible,textarea:focus-visible{outline:2px solid var(--volt);outlin
 #intakeForm .form-actions{margin-top:6px}
 @media(max-width:780px){.hero-copy .button-primary{display:flex;width:100%;max-width:290px;margin:0 0 9px;padding:12px}.hero-art{min-width:45px}.panel-header>.button-primary{flex:1 1 100%;width:100%;margin:6px 0 0}.hero{align-items:center}.panel-header{gap:8px}}
 @media(prefers-reduced-motion:reduce){.button-primary,.hero,.order-row{transition:none}}
+
+/* Safar Control reverse-logistics: verified source, human warehouse handoff. */
+.return-case-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:14px}
+.return-case-card{border:1px solid #33433c;border-radius:16px;padding:19px;background:linear-gradient(160deg,#1b2420 0%,#11171d 70%)}
+.return-case-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.return-case-head>div{min-width:0}
+.return-case-head h3{font-size:17px;font-weight:720;letter-spacing:-.04em;margin:8px 0}
+.return-case-head p{margin:0;color:#c0c9d0;font-size:13px;overflow-wrap:anywhere}
+.return-case-head>.state{white-space:normal;text-align:center;flex:0 1 115px}
+.return-case-meta{color:#b0bac1;font-size:12px;line-height:1.6;margin:13px 0}
+.return-carrier{border:1px solid #456043;border-radius:10px;padding:12px;background:#141e19}
+.return-carrier strong{font-size:13px;line-height:1.5;display:block;margin-top:8px}
+.return-carrier p{color:#b6bfc5;font-size:12px;line-height:1.55;margin:8px 0 0}
+.return-case-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:17px}
+.return-case-actions>.button-quiet{flex:1 1 130px}
+.return-case-actions>.button-quiet svg{width:17px;height:17px}
+@media(max-width:780px){.return-case-list{grid-template-columns:1fr}.return-case-card{padding:16px}.return-case-actions>.button-quiet{min-height:46px}}
