@@ -135,7 +135,7 @@ PHONE_RE = re.compile(
 )
 WAREHOUSE_RE = re.compile(
     r"(?i)\b(?:нп|нова\s*пошта|новая\s*почта|отд(?:еление)?|відд(?:ілення)?)"
-    r"\s*(?:№|#|n)?\s*[:\-]?\s*(\d{1,5})\b"
+    r"\s*(?:(?:№|#)\s*|(?:номер|ном\.?|number|no?\.?)\s*)?[:\-]?\s*(\d{1,5})\b"
 )
 COST_RE = re.compile(
     r"(?i)\b(?:оценка|оцінка|стоимость|вартість|объявленная\s+стоимость|оголошена\s+вартість)"
@@ -283,7 +283,9 @@ def parse_order(text: str):
                 continue
 
         address_parts = _parse_street_line(line)
-        if address_parts and not data.get("street"):
+        # Адрес на строке ниже "відділення №8" — это адрес самого
+        # отделения, а не запрос на курьерскую доставку.
+        if address_parts and not data.get("street") and not data.get("warehouse"):
             data.update(address_parts)
             address_line_index = i
 
