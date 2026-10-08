@@ -470,6 +470,27 @@ class OrderPipeline:
             self.wakeup.wait(0.5)
             self.wakeup.clear()
 
+    def order_state_counts(self, chat_id, owner_id):
+        """Owner-scoped totals across the entire journal, not just recent jobs."""
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT state, COUNT(*) AS quantity FROM jobs "
+                "WHERE chat_id=? AND owner_id=? GROUP BY state",
+                (chat_id, owner_id),
+            ).fetchall()
+        return {row["state"]: int(row["quantity"]) for row in rows}
+
+    def order_queue(self, chat_id, owner_id, limit=10):
+        """Only outstanding/failed jobs for this Telegram sender."""
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT body FROM jobs WHERE chat_id=? AND owner_id=? "
+                "AND state IN ('collecting','processing','invalid','failed','uncertain') "
+                "ORDER BY updated DESC LIMIT ?",
+                (chat_id, owner_id, limit),
+            ).fetchall()
+        return [json.loads(row["body"]) for row in rows]
+
     def list_orders(self, chat_id, owner_id, limit=10):
         with self.lock:
             rows = self.db.execute("SELECT body FROM jobs WHERE chat_id=? AND owner_id=? ORDER BY updated DESC LIMIT ?",

@@ -5,6 +5,8 @@ import logging
 import math
 import threading
 
+from access_policy import AccessPolicy
+
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 import telebot
@@ -45,11 +47,12 @@ PUBLIC_BASE_URL = (
     )
 ).rstrip("/")
 
-ALLOWED_CHAT_IDS = {
-    int(x.strip())
-    for x in os.getenv("ALLOWED_CHAT_IDS", "").split(",")
-    if x.strip().lstrip("-").isdigit()
-}
+ACCESS_POLICY = AccessPolicy(
+    chats=os.getenv("ALLOWED_CHAT_IDS", ""),
+    users=os.getenv("ALLOWED_USER_IDS", ""),
+    strict=os.getenv("STRICT_ACCESS_POLICY", "0").strip() == "1",
+)
+ALLOWED_CHAT_IDS = ACCESS_POLICY.chats
 
 if not TELEGRAM_BOT_TOKEN:
     logger.error("TELEGRAM_BOT_TOKEN/BOT_TOKEN is missing")
@@ -58,14 +61,23 @@ if not NOVA_POSHTA_API_KEY:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
-RELEASE_VERSION = "2026.10.08-interactive-order-cards-v9"
+RELEASE_VERSION = "2026.10.08-operations-v2-rc1"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) if TELEGRAM_BOT_TOKEN else None
 np_client = NovaPoshtaClient(NOVA_POSHTA_API_KEY) if NOVA_POSHTA_API_KEY else None
 
-def _is_allowed(message) -> bool:
-    if not ALLOWED_CHAT_IDS:
-        return True
-    return message.chat.id in ALLOWED_CHAT_IDS
+def _access_permits(chat_id, user_id):
+    """Apply both legacy chat restrictions and the stricter actor policy."""
+    if ALLOWED_CHAT_IDS and chat_id not in ALLOWED_CHAT_IDS:
+        return False
+    return ACCESS_POLICY.permits(chat_id, user_id)
+
+
+def _is_allowed(message, *, actor_id=None) -> bool:
+    """Validate both chat and the real human initiating a command/callback."""
+    chat = getattr(message, "chat", None)
+    sender = getattr(message, "from_user", None)
+    user_id = actor_id if actor_id is not None else getattr(sender, "id", None)
+    return _access_permits(getattr(chat, "id", None), user_id)
 
 
 def _canonical_key(raw: str) -> str:
@@ -533,6 +545,9 @@ BOT_COMMANDS = (
     ("help", "Как переслать заказ с фото"),
     ("example", "Образец заполненного заказа"),
     ("orders", "Мои последние 10 заказов"),
+    ("queue", "Заказы в очереди и с ошибками"),
+    ("stats", "Статистика обработки заказов"),
+    ("whoami", "Мой Telegram ID для настройки доступа"),
     ("track", "Проверить статус ТТН"),
     ("retry", "Повторить заказ или пересоздать удалённую ТТН"),
     ("status", "Проверить работу бота и Новой почты"),
@@ -542,6 +557,7 @@ MENU_TEXT = (
     + "\n\nЗаказ с фото просто перешли сюда из группы."
     + "\n/track — последний заказ, ответ на карточку или /track НОМЕР_ТТН."
     + "\n/retry отправляй ответом на карточку заказа или сообщение с ошибкой."
+    + "\n/whoami отправляй боту в личные сообщения для безопасной настройки доступа."
 )
 ORDER_EXAMPLE = (
     "Одесса\n"
@@ -562,6 +578,19 @@ _telegram_commands = []
 
 
 def register_command_handlers(telegram_bot):
+    @telegram_bot.message_handler(commands=["whoami"])
+    def whoami_handler(message):
+        # Configure allowlists before strict mode. Never respond in blocked chats.
+        if not _is_allowed(message) or message.chat.type not in {"private", "group", "supergroup"}:
+            return
+        telegram_bot.reply_to(
+            message,
+            f"Твой Telegram User ID: {message.from_user.id}\n"
+            f"Chat ID: {message.chat.id}\n\n"
+            "Для доступа из группы также потребуется её Chat ID. "
+            "Не отправляй API-ключи или пароли в Telegram.",
+        )
+
     @telegram_bot.message_handler(commands=["start", "menu"])
     def start_handler(message):
         if not _is_allowed(message):
@@ -588,6 +617,16 @@ def register_command_handlers(telegram_bot):
         telegram_ok = False
         np_ok = False
         sender_status = "не проверен"
+        storage_status = "ERROR"
+        try:
+            pipeline = get_pipeline()
+            if pipeline:
+                with pipeline.lock:
+                    if pipeline.db.ping():
+                        storage_status = ("PostgreSQL (постоянное)" if pipeline.db.persistent
+                                          else "SQLite (непостоянное на Render Free)")
+        except Exception:
+            logger.warning("Order journal status check failed")
 
         try:
             telegram_ok = bool(telegram_bot.get_me().id)
@@ -610,7 +649,8 @@ def register_command_handlers(telegram_bot):
             "SAFAR NP BOT\n"
             f"Telegram: {'OK' if telegram_ok else 'ERROR'}\n"
             f"Nova Poshta API: {'OK' if np_ok else 'ERROR'}\n"
-            f"Sender: {sender_status}",
+            f"Sender: {sender_status}\n"
+            f"Order journal: {storage_status}",
         )
 
     @telegram_bot.message_handler(commands=["orders"])
@@ -631,6 +671,52 @@ def register_command_handlers(telegram_bot):
             result = job.get("result") or {}
             lines.append(f"{result.get('ttn') or '—'} · {order.get('full_name') or 'Заказ'} · {labels[job['state']]}")
         telegram_bot.reply_to(message, "Последние заказы:\n" + "\n".join(lines) if lines else "Заказов пока нет.")
+
+    @telegram_bot.message_handler(commands=["queue"])
+    def queue_handler(message):
+        if not _is_allowed(message):
+            return
+        pipeline = get_pipeline()
+        if not pipeline:
+            telegram_bot.reply_to(message, "Очередь пока недоступна.")
+            return
+        jobs = pipeline.order_queue(message.chat.id, message.from_user.id)
+        if not jobs:
+            telegram_bot.reply_to(message, "✅ Нет ожидающих обработки или проблемных заказов.")
+            return
+        names = {"collecting": "ожидает", "processing": "обрабатывается",
+                 "invalid": "нужны данные", "failed": "ошибка",
+                 "uncertain": "проверить в НП"}
+        lines = ["📦 ОЧЕРЕДЬ И ПРОБЛЕМНЫЕ ЗАКАЗЫ"]
+        for job in jobs:
+            order = job.get("order") or {}
+            lines.append(
+                f"• {order.get('full_name') or 'Новый заказ'} · "
+                f"{names.get(job['state'], job['state'])}"
+            )
+        telegram_bot.reply_to(message, "\n".join(lines))
+
+    @telegram_bot.message_handler(commands=["stats"])
+    def stats_handler(message):
+        if not _is_allowed(message):
+            return
+        pipeline = get_pipeline()
+        if not pipeline:
+            telegram_bot.reply_to(message, "Статистика пока недоступна.")
+            return
+        counts = pipeline.order_state_counts(message.chat.id, message.from_user.id)
+        pending = sum(counts.get(k, 0) for k in ("collecting", "processing"))
+        problems = sum(counts.get(k, 0) for k in ("invalid", "failed", "uncertain"))
+        telegram_bot.reply_to(
+            message,
+            "📊 SAFAR — СТАТИСТИКА ЗАКАЗОВ\n"
+            f"Всего записей: {sum(counts.values())}\n"
+            f"Созданные: {counts.get('created', 0)}\n"
+            f"В обработке: {pending}\n"
+            f"Требуют внимания: {problems}\n"
+            f"Удалённые ТТН: {counts.get('deleted', 0)}\n\n"
+            "Показаны записи текущего пользователя и чата, не финансовая выручка.",
+        )
 
     @telegram_bot.message_handler(commands=["track"])
     def track_handler(message):
@@ -681,7 +767,7 @@ def register_command_handlers(telegram_bot):
             telegram_bot.answer_callback_query(call.id, "Неизвестная кнопка", show_alert=True)
             return
         message = call.message
-        if not _is_allowed(message):
+        if not _is_allowed(message, actor_id=call.from_user.id):
             telegram_bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
             return
         pipeline = get_pipeline()
@@ -822,6 +908,7 @@ def health():
         telegram_commands=_telegram_commands,
         order_storage=_pipeline.db.backend if _pipeline else None,
         order_storage_persistent=bool(_pipeline and _pipeline.db.persistent),
+        access_policy=ACCESS_POLICY.status(),
     )
 
 
@@ -844,20 +931,20 @@ def ready():
         try:
             telegram_ok = bool(bot.get_me().id)
         except Exception as exc:
-            errors["telegram"] = str(exc)
+            errors["telegram"] = type(exc).__name__
 
     if np_client:
         try:
             nova_poshta_ok = bool(np_client.ping())
         except Exception as exc:
-            errors["nova_poshta"] = str(exc)
+            errors["nova_poshta"] = type(exc).__name__
 
         if nova_poshta_ok:
             try:
                 np_client.get_sender_info()
                 sender_ok = True
             except Exception as exc:
-                errors["sender"] = str(exc)
+                errors["sender"] = type(exc).__name__
                 try:
                     senders = np_client._call(
                         "Counterparty",
@@ -911,39 +998,14 @@ def ready():
     ), (200 if overall else 503)
 
 
-_one_time_ttn_result = None
-
-@app.get("/ops/create-one-time-ttn")
+@app.route("/ops/create-one-time-ttn", methods=["GET", "POST"])
 def create_one_time_ttn():
-    global _one_time_ttn_result
-    if os.getenv("ENABLE_ONE_TIME_TTN_OPS") != "1":
-        return jsonify(error="disabled"), 403
-    secret = os.getenv("ONE_TIME_TTN_SECRET", "")
-    supplied = request.args.get("secret", "")
-    if not secret or not hmac.compare_digest(supplied, secret):
-        return jsonify(error="forbidden"), 403
-    if _one_time_ttn_result is not None:
-        return jsonify(ok=True, duplicate_blocked=True, result=_one_time_ttn_result)
-    if not np_client:
-        return jsonify(error="Nova Poshta client is not configured"), 503
+    """Retired: in-memory one-off creation is unsafe after worker restart.
 
-    try:
-        result = np_client.create_ttn(
-            full_name=os.getenv("ONE_TIME_TTN_NAME", ""),
-            phone=os.getenv("ONE_TIME_TTN_PHONE", ""),
-            city=os.getenv("ONE_TIME_TTN_CITY", ""),
-            warehouse=os.getenv("ONE_TIME_TTN_WAREHOUSE", ""),
-            weight=float(os.getenv("ONE_TIME_TTN_WEIGHT", "1")),
-            description=os.getenv("ONE_TIME_TTN_DESCRIPTION", "Одяг та взуття"),
-            cost=float(os.getenv("ONE_TIME_TTN_COST", "200")),
-            cod_amount=float(os.getenv("ONE_TIME_TTN_COD", "0")),
-        )
-        _one_time_ttn_result = result
-        logger.info("ONE_TIME_TTN_CREATED number=%s", result.get("ttn"))
-        return jsonify(ok=True, result=result)
-    except Exception as exc:
-        logger.exception("ONE_TIME_TTN_FAILED")
-        return jsonify(ok=False, error=str(exc)), 500
+    A lost response or reboot could create an uncontrolled duplicate TTN.
+    All shipments must pass through the persistent receipt/identity journal.
+    """
+    return jsonify(error="retired; forward the order through the signed Telegram webhook"), 410
 
 
 @app.post("/webhook")
@@ -977,14 +1039,14 @@ def webhook():
             pipeline.remember_update(update_id)
             return jsonify(ok=True, ignored=True)
         chat_id = (message.get("chat") or {}).get("id")
-        if ALLOWED_CHAT_IDS and chat_id not in ALLOWED_CHAT_IDS:
-            pipeline.remember_update(update_id)
-            return jsonify(ok=True, ignored=True)
         if (message.get("from") or {}).get("is_bot"):
             pipeline.remember_update(update_id)
             return jsonify(ok=True, ignored=True)
         text = message.get("text") or ""
         command = text.split(None, 1)[0].split("@", 1)[0] if text.startswith("/") else ""
+        if not _access_permits(chat_id, (message.get("from") or {}).get("id")):
+            pipeline.remember_update(update_id)
+            return jsonify(ok=True, ignored=True)
         if command == "/retry":
             if not message.get("reply_to_message"):
                 bot.send_message(chat_id, "Ответь командой /retry на карточку заказа. Если ТТН удалена в НП, создам новую.")

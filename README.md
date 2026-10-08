@@ -1,5 +1,40 @@
 # SAFAR NP BOT
 
+## Operations v2.0 candidate (safe rollout)
+
+Commands added in the `feat/safar-v2-access-and-operations-20261008` branch:
+
+- `/whoami`: shows only the caller's Telegram user ID and the current chat ID.
+  Use once in a private chat and once in each authorized order group.
+- `/queue`: lists up to 10 outstanding/failed orders for this human sender
+  in the current chat.
+- `/stats`: owner-scoped lifetime state counts from the journal (not revenue).
+- `/status`: displays whether the journal is Postgres or development SQLite.
+
+Security rollout on the existing Render service:
+
+1. Start the bot and send `/whoami` in private chat and in the order group.
+2. Set `ALLOWED_CHAT_IDS` to comma-separated allowed private/group chat IDs.
+3. Set `ALLOWED_USER_IDS` to comma-separated authorized human Telegram IDs.
+4. Set `STRICT_ACCESS_POLICY=1`. This **fails closed** if either list is empty.
+   The group alone is never authority to create a shipment in strict mode.
+5. Verify the restricted policy on `/health` (only booleans are exposed), test
+   `/whoami`, `/queue`, `/stats`, one existing order, and an unauthorized actor.
+   Do NOT create a live test shipment; mock APIs or an already-created order suffice.
+
+The legacy one-time direct shipment URL is retired in this branch and cannot create\na live TTN even when its old environment switch remains set.\n\nThe strict flag is intentionally opt-in so the PR can be reviewed without
+interrupting the currently operating service. **Before enabling strict mode,
+orders are not protected by user allowlisting unless `ALLOWED_USER_IDS` is
+already configured.** Leaving both ID lists empty leaves legacy open access.
+Never merge/deploy believing the strict policy is active before setting the
+Render variables.
+
+**Data persistence:** Set `STATE_DATABASE_URL` to the restricted Postgres
+connection and `STATE_REQUIRE_PERSISTENT=1`; verify `/status` reports
+`PostgreSQL (постоянное)`. Never set the required flag before a valid Postgres
+database and migration are ready; otherwise new webhook requests get 503.
+Render Free local SQLite is not durable, even when the runtime looks healthy.
+
 Existing Flask / Gunicorn service for forwarded Nova Poshta orders.
 
 - Forward a photo with its order caption, or an album with a caption on any image.
@@ -95,5 +130,4 @@ instance, plus overlapping deployment, transaction rollback and private-role
 access scenarios. Local Postgres tests run only if `SAFAR_TEST_DATABASE_URL`
 points to a dedicated disposable test database; never use a production URL.
 `/health` reports the release and worker; `/ready` checks Telegram, Nova Poshta
-and sender configuration. The temporary one-time shipment endpoint is disabled
-unless `ENABLE_ONE_TIME_TTN_OPS=1` is explicitly configured.
+and sender configuration. The former `/ops/create-one-time-ttn` endpoint is permanently retired (HTTP 410),\nbecause in-memory idempotency could create duplicate shipment numbers after a restart.\nLegacy `ENABLE_ONE_TIME_TTN_OPS` no longer re-enables it; use the durable Telegram journal.
