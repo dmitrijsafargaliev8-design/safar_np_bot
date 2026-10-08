@@ -334,6 +334,16 @@ class SafarAppTests(unittest.TestCase):
         self.assertEqual(remote.call_args.kwargs, {"timeout": (5, 12), "stream": True, "allow_redirects": False})
         self.assertEqual(self.get("/api/safar/orders/job-foreign/photo/0").status_code, 404)
 
+    def test_photo_gateway_logs_only_safe_failure_stage(self):
+        self.login()
+        self.telegram.get_file.side_effect = RuntimeError("secret "+TOKEN)
+        with patch("safar_app.photo_logger.warning") as warn:
+            response = self.get("/api/safar/orders/job-alpha/photo/0")
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(warn.call_count, 1)
+        self.assertEqual(warn.call_args.args[1], "lookup")
+        self.assertNotIn(TOKEN, str(warn.call_args))
+
     def test_photo_upstream_failures_are_sanitized_and_byte_limit_is_enforced(self):
         self.login()
         self.telegram.get_file.side_effect = RuntimeError("https://api.telegram.org/bot" + TOKEN)
