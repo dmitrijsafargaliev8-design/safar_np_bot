@@ -70,6 +70,14 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("Без наложки", sent["caption"])
         self.assertEqual(sent["reply_to_message_id"], 1)
 
+    def test_saved_order_lookup_by_card_is_restricted_to_chat_and_owner(self):
+        self.pipeline.ingest(message(1, caption=ORDER), 1)
+        self.drain()
+        for mid in (1, self.sent_id):
+            self.assertEqual(self.pipeline.order_for_message(100, 99, mid)["result"]["ttn"], "20400000000001")
+            self.assertIsNone(self.pipeline.order_for_message(100, 42, mid))
+            self.assertIsNone(self.pipeline.order_for_message(200, 99, mid))
+
     def test_forwarded_photo_with_oblast_before_city_creates_correct_shipment(self):
         client = NovaPoshtaClient("fake-test-api-key")
         client.get_sender_info = Mock(return_value={"city_ref": "sender-city", "sender_ref": "sender",

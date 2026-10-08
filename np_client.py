@@ -193,8 +193,8 @@ class NovaPoshtaClient:
         rows = self._call("Address", "getCities", {"FindByString": "Одеса", "Limit": "1", "Page": "1"})
         return bool(rows)
 
-    def is_ttn_deleted(self, ttn: str, *, phone: str = "") -> bool:
-        """Only an explicit deletion of this exact document unlocks a new save."""
+    def get_ttn_status(self, ttn: str, *, phone: str = "") -> dict:
+        """Read the status of one exact document without changing a shipment."""
         number = str(ttn or "").strip()
         if not re.fullmatch(r"\d{14}", number):
             raise NovaPoshtaError("Не удалось проверить номер ранее созданной ТТН.")
@@ -204,7 +204,16 @@ class NovaPoshtaClient:
         rows = self._call("TrackingDocument", "getStatusDocuments", {"Documents": [document]})
         if len(rows) != 1 or not isinstance(rows[0], dict) or str(rows[0].get("Number", "")) != number:
             raise NovaPoshtaTemporaryError("Новая Почта не подтвердила статус ранее созданной ТТН.")
-        code = str(rows[0].get("StatusCode", "")).strip()
+        row = rows[0]
+        code = str(row.get("StatusCode", "")).strip()
+        if not code.isdigit() or int(code) == 0:
+            raise NovaPoshtaTemporaryError("Новая Почта не подтвердила статус ТТН. Повтори позже.")
+        return row
+
+    def is_ttn_deleted(self, ttn: str, *, phone: str = "") -> bool:
+        """Only an explicit deletion of this exact document unlocks a new save."""
+        row = self.get_ttn_status(ttn, phone=phone)
+        code = str(row["StatusCode"]).strip()
         if code == "2":
             return True
         # 'Number not found' is not proof of deletion. A delay, API failure or

@@ -39,3 +39,10 @@ class TrackingTests(unittest.TestCase):
         with self.assertRaises(NovaPoshtaError):
             self.client.is_ttn_deleted("invalid")
         self.client._call.assert_not_called()
+
+    def test_number_not_found_is_visible_for_tracking_but_never_unlocks_recreation(self):
+        row = {"Number": "20400000000001", "StatusCode": "3", "Status": "Номер не знайдено"}
+        self.client._call.return_value = [row]
+        self.assertEqual(self.client.get_ttn_status("20400000000001"), row)
+        with self.assertRaises(NovaPoshtaTemporaryError):
+            self.client.is_ttn_deleted("20400000000001")
