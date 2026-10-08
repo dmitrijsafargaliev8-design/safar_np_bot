@@ -15,6 +15,7 @@ from telebot import types
 
 from np_client import NovaPoshtaError, NovaPoshtaTemporaryError, NovaPoshtaUncertainError
 from order_journal import OrderJournal
+from order_edits import parse_field_patch, apply_field_patch, patch_labels
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +25,11 @@ def _json(value):
 
 
 class OrderPipeline:
-    def __init__(self, path, parser, client, bot, *, album_wait=3.0, clock=time.time, database_url=None):
+    def __init__(self, path, parser, client, bot, *, album_wait=3.0, clock=time.time, database_url=None,
+                 sender_clients=None):
         self.parser, self.client, self.bot = parser, client, bot
+        self.sender_clients = dict(sender_clients or {"default": client})
+        self.sender_clients.setdefault("default", client)
         self.album_wait, self.clock = album_wait, clock
         self.lock = threading.RLock()
         self.wakeup = threading.Event()
@@ -62,6 +66,30 @@ class OrderPipeline:
         with self.lock, self.db:
             self.db.execute("INSERT INTO updates VALUES (?,?) ON CONFLICT(id) DO NOTHING", (update_id, self.clock()))
 
+    def _sender_client(self, profile_id):
+        if profile_id not in self.sender_clients:
+            raise NovaPoshtaError("Профиль отправителя недоступен; ТТН не создавалась.")
+        return self.sender_clients[profile_id]
+
+    def sender_preference(self, chat_id, owner_id):
+        with self.lock:
+            row = self.db.execute(
+                "SELECT profile_id FROM sender_preferences WHERE chat_id=? AND owner_id=?",
+                (chat_id, owner_id),
+            ).fetchone()
+        return row["profile_id"] if row else "default"
+
+    def set_sender_preference(self, chat_id, owner_id, profile_id):
+        """Persist future selection; never change already ingested orders."""
+        self._sender_client(profile_id)
+        with self.lock, self.db:
+            self.db.execute(
+                "INSERT INTO sender_preferences (chat_id,owner_id,profile_id,updated) "
+                "VALUES (?,?,?,?) ON CONFLICT(chat_id,owner_id) "
+                "DO UPDATE SET profile_id=excluded.profile_id,updated=excluded.updated",
+                (chat_id, owner_id, profile_id, self.clock()),
+            )
+
     def ingest(self, message, update_id, *, edited=False, retry=False):
         """One transaction saves the entire message before acknowledging Telegram."""
         chat_id = int(message["chat"]["id"])
@@ -93,11 +121,27 @@ class OrderPipeline:
                     raise ValueError("Retry must refer to a saved order")
                 job = dict(key=key, chat_id=chat_id, owner_id=owner_id, thread_id=thread,
                            anchor_id=message_id, messages=[], state="collecting", due=0,
-                           attempts=0, notified=False, result=None, order=None, identity=None)
+                           attempts=0, notified=False, result=None, order=None, identity=None,
+                           sender_profile=self.sender_preference(chat_id, owner_id))
             previous_media = self.attachments(job)
-            # Preserve source images when a complete correction is sent as a reply.
+            # Explicit short corrections are staged; live receipt remains unchanged
+            # until deleted by the user and independently verified via Nova Poshta.
             if linked and (message.get("text") or message.get("caption")) and not retry:
-                job["override"] = message.get("text") or message.get("caption")
+                correction = message.get("text") or message.get("caption")
+                patch = parse_field_patch(correction)
+                if patch is not None and job.get("order") is not None:
+                    if job["state"] in {"processing", "uncertain"}:
+                        raise ValueError("Создание ТТН не подтверждено. Исправления временно заблокированы.")
+                    base = self._parse(job)
+                    pending = dict(job.get("pending_edits") or {})
+                    pending.update(patch)
+                    apply_field_patch(base, pending)  # validate before writing anything
+                    job["pending_edits"] = pending
+                    job["notice"] = ("Сохранена правка: " + patch_labels(pending)
+                                     + ". Удали действующую ТТН в НП и ответь /retry на карточку.")
+                else:
+                    job["override"] = correction
+                    job.pop("pending_edits", None)
             old = next((m for m in job["messages"] if m["message_id"] == message_id), None)
             if not retry:
                 if old:
@@ -113,7 +157,7 @@ class OrderPipeline:
                 job.update(state="collecting", notified=False, attempts=0, due=self.clock())
             elif job["state"] == "created":
                 if linked or (edited and old and text != (old.get("text") or old.get("caption") or "")):
-                    job["notice"] = "ТТН уже создана. Изменение текста не меняет готовую накладную."
+                    job.setdefault("notice", "ТТН уже создана. Изменение текста не меняет готовую накладную.")
                     job["notified"] = False
                     job["due"] = self.clock()
                 if self.attachments(job) != previous_media:
@@ -209,7 +253,8 @@ class OrderPipeline:
 
     def _parse(self, job):
         if job.get("override"):
-            return self.parser(job["override"])
+            order = self.parser(job["override"])
+            return apply_field_patch(order, job["pending_edits"]) if job.get("pending_edits") else order
         captions = list(dict.fromkeys(
             (m.get("text") or m.get("caption") or "").strip() for m in job["messages"]
             if (m.get("text") or m.get("caption") or "").strip()
@@ -228,7 +273,8 @@ class OrderPipeline:
         # recipient/phone cannot be discarded as an incomplete caption.
         combined = "\n".join(captions)
         order = self.parser(combined)
-        return parsed[0] if parsed else order
+        order = parsed[0] if parsed else order
+        return apply_field_patch(order, job["pending_edits"]) if job.get("pending_edits") else order
 
     def _process(self, job):
         try:
@@ -255,10 +301,12 @@ class OrderPipeline:
                 return
             receipt = json.loads(row["result"])
             previous_result = receipt.get("result") or receipt
+            receipt.setdefault("sender_profile", "default")
             original_order = receipt.get("order") or order
             if row["state"] == "created":
                 try:
-                    deleted = self.client.is_ttn_deleted(previous_result.get("ttn"), phone=original_order.get("phone", ""))
+                    previous_client = self._sender_client(receipt.get("sender_profile", "default"))
+                    deleted = previous_client.is_ttn_deleted(previous_result.get("ttn"), phone=original_order.get("phone", ""))
                     if type(deleted) is not bool:
                         raise NovaPoshtaTemporaryError("Новая Почта не подтвердила статус ранее созданной ТТН.")
                 except NovaPoshtaError as exc:
@@ -278,6 +326,8 @@ class OrderPipeline:
                 history.append({"result": previous_result, "order": original_order, "deleted_at": self.clock()})
                 receipt = {"result": previous_result, "order": order, "history": history}
             job["replaced_ttn"] = previous_result["ttn"]
+        shipment_client = self._sender_client(job.get("sender_profile", "default"))
+        receipt["sender_profile"] = job.get("sender_profile", "default")
         with self.lock, self.db:
             if row:
                 self._save_receipt(job, "creating", receipt)
@@ -291,7 +341,7 @@ class OrderPipeline:
                 self.db.execute("INSERT INTO receipts VALUES (?,?,?,?)", (identity, "creating", None, self.clock()))
             self._write(job)
         try:
-            result = self.client.create_ttn(**order)
+            result = shipment_client.create_ttn(**order)
             if not isinstance(result, dict) or not result.get("ttn"):
                 raise NovaPoshtaUncertainError("Не получен номер ТТН. Проверь накладные в Новой Почте.")
             # Record success before sending Telegram: a failed send never creates
@@ -299,6 +349,7 @@ class OrderPipeline:
             with self.lock, self.db:
                 self._save_receipt(job, "created", {**receipt, "result": result, "order": order})
             job.update(state="created", result=result, due=self.clock(), notified=False)
+            job.pop("pending_edits", None)
         except NovaPoshtaTemporaryError as exc:
             with self.lock, self.db:
                 if job.get("replaced_ttn"):
