@@ -585,6 +585,84 @@ class SafarAppTests(unittest.TestCase):
         self.assertEqual(confirmed.json["case"]["warehouse_state"], "received")
         self.assertEqual(confirmed.json["case"]["finance_state"], "unreviewed")
 
+    def test_private_scheduler_disabled_unless_authenticated_and_migrated(self):
+        url = "/api/internal/safar/sync"
+        with patch.dict(os.environ, {"SAFAR_SYNC_ENABLED": "0",
+                                     "SAFAR_SYNC_SECRET": "Z" * 40}):
+            self.assertEqual(self.post(url).status_code, 404)
+        with patch.dict(os.environ, {"SAFAR_SYNC_ENABLED": "1",
+                                     "SAFAR_SYNC_SECRET": "tiny"}):
+            self.assertEqual(self.post(url).status_code, 404)
+        with patch.dict(os.environ, {"SAFAR_SYNC_ENABLED": "1",
+                                     "SAFAR_SYNC_SECRET": "Z" * 40}):
+            self.assertEqual(self.post(url).status_code, 403)
+            self.assertEqual(self.client.post(
+                url, base_url=BASE,
+                headers={"X-Safar-Sync-Token": "X" * 40}).status_code, 403)
+            accepted = self.client.post(
+                url, base_url=BASE,
+                headers={"X-Safar-Sync-Token": "Z" * 40})
+            self.assertEqual(accepted.status_code, 200)
+            self.assertTrue(accepted.json["ok"])
+            self.assertEqual(accepted.json["monitoring"]["checked"], 1)
+            self.assertEqual(accepted.json["monitoring"]["changed"], 1)
+            self.assertIn("no-store", accepted.headers["Cache-Control"])
+            # A second simultaneous scheduler hit must not duplicate events.
+            again = self.client.post(
+                url, base_url=BASE,
+                headers={"X-Safar-Sync-Token": "Z" * 40})
+            self.assertEqual(again.status_code, 200)
+            self.assertEqual(again.json["monitoring"]["attempted"], 0)
+        self.carrier.get_ttn_status.assert_called_once()
+        self.carrier.create_ttn.assert_not_called()
+
+    def test_carrier_timeline_is_private_durable_and_never_creates_return(self):
+        from safar_monitor import monitor_pass
+        self.login()
+        self.assertEqual(self.get("/api/safar/orders/job-alpha/carrier-events").json[
+            "timeline"]["events"], [])
+        now = time.time()
+        self.pipeline.set_sender_preference(USER, USER, "other")
+        first = monitor_pass(self.pipeline, clock=lambda: now)
+        self.assertEqual(first["checked"], 1)
+        self.assertEqual(first["changed"], 1)
+        historical = self.get("/api/safar/orders/job-alpha/carrier-events")
+        self.assertEqual(historical.status_code, 200)
+        self.assertEqual(len(historical.json["timeline"]["events"]), 1)
+        self.assertEqual(historical.json["timeline"]["events"][0]["code"], "1")
+        self.carrier.get_ttn_status.assert_called_once()
+        self.other_carrier.get_ttn_status.assert_not_called()
+        # Status 103 is just an NP observation, not a command to order a return.
+        self.carrier.get_ttn_status.return_value = {
+            "Number": SAMPLE["result"]["ttn"], "StatusCode": "103",
+            "Status": "Відмова одержувача"}
+        later = monitor_pass(self.pipeline, clock=lambda: now + 901)
+        self.assertEqual(later["checked"], 1)
+        self.assertEqual(later["changed"], 1)
+        events = self.get("/api/safar/orders/job-alpha/carrier-events").json[
+            "timeline"]["events"]
+        self.assertEqual([x["code"] for x in events], ["103", "1"])
+        self.assertEqual(self.get("/api/safar/returns").json["cases"], [])
+        self.assertEqual(self.get("/api/safar/orders/job-alpha/carrier-events?chat_id="
+                         + str(GROUP)).status_code, 404)
+        self.assertEqual(self.get("/api/safar/orders/unknown/carrier-events").status_code, 404)
+        self.carrier.create_ttn.assert_not_called()
+
+    def test_monitor_failed_read_preserves_last_carrier_truth(self):
+        from safar_monitor import monitor_pass
+        from np_client import NovaPoshtaTemporaryError
+        self.login()
+        now = time.time()
+        self.assertEqual(monitor_pass(self.pipeline, clock=lambda: now)["checked"], 1)
+        self.carrier.get_ttn_status.side_effect = NovaPoshtaTemporaryError("temporary")
+        failed = monitor_pass(self.pipeline, clock=lambda: now + 920)
+        self.assertEqual(failed["failed"], 1)
+        evidence = self.get("/api/safar/orders/job-alpha/carrier-events").json["timeline"]
+        self.assertEqual(evidence["last_verified"]["status_code"], "1")
+        self.assertTrue(evidence["last_verified"]["error"])
+        self.assertEqual(len(evidence["events"]), 1)
+        self.carrier.create_ttn.assert_not_called()
+
     def test_carrier_refusal_code_is_observation_not_automatic_return_request(self):
         self.login()
         self.carrier.get_ttn_status.return_value = {
