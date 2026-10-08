@@ -528,6 +528,17 @@ class SafarAppTests(unittest.TestCase):
         self.assertEqual(len(self.get("/api/safar/returns").json["cases"]), 1)
         self.assertEqual(len(self.get("/api/safar/returns/" + case["id"]).json["case"]["events"]), 1)
 
+    def test_carrier_refusal_code_is_observation_not_automatic_return_request(self):
+        self.login()
+        self.carrier.get_ttn_status.return_value = {
+            "Number": SAMPLE["result"]["ttn"], "StatusCode": "103",
+            "Status": "Відмова одержувача", "LightReturnNumber": ""}
+        result = self.get("/api/safar/orders/job-alpha/tracking")
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(self.get("/api/safar/returns").json["cases"], [])
+        self.carrier.create_ttn.assert_not_called()
+        self.carrier.order_cargo_return.assert_not_called()
+
     def test_pdf_proxy_uses_original_sender_and_never_exposes_key(self):
         self.login()
         self.assertEqual(self.get("/api/safar/orders/job-alpha/pdf").status_code, 404)
