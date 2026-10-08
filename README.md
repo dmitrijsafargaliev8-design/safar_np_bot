@@ -28,8 +28,10 @@ missing database setting cannot silently enable local storage.
 
 For Supabase, copy the actual **session pooler** host from the project's Connect
 dialog and use port **5432**, user `safar_bot.PROJECT_REF`, and
-`sslmode=verify-full`. The runtime uses the Requests CA bundle when no
-`sslrootcert` is specified; an explicit custom database CA remains supported. The
+`sslmode=verify-full`. For Supabase hosts, the runtime loads the official
+[Supabase Root 2021 CA](https://supabase-downloads.s3-ap-southeast-1.amazonaws.com/prod/ssl/prod-ca-2021.crt)
+from `certs/supabase-prod-ca-2021.crt` (valid until April 2031). Other providers
+use the Requests CA bundle. An explicit `sslrootcert` remains supported. The
 transaction pooler on port 6543 is deliberately rejected because it cannot
 retain the worker's session lock. Only the lock holder recovers or processes
 the queue, including while old and new deployments overlap. Short journal
