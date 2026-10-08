@@ -252,6 +252,10 @@ class OrderPipeline:
             job.update(state="failed", error=error, due=self.clock(), notified=False)
 
     def _parse(self, job):
+        # A short correction message must NOT be parsed together with the old
+        # caption: it would create contradictory duplicate values.
+        if job.get("pending_edits") and job.get("order") and not job.get("override"):
+            return apply_field_patch(job["order"], job["pending_edits"])
         if job.get("override"):
             order = self.parser(job["override"])
             return apply_field_patch(order, job["pending_edits"]) if job.get("pending_edits") else order
