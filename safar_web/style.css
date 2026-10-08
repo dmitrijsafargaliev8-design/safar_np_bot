@@ -118,3 +118,8 @@ button:focus-visible,textarea:focus-visible{outline:2px solid var(--volt);outlin
  cursor:pointer}
 #intakeImage:focus-visible{outline:2px solid var(--volt);outline-offset:3px}
 #intakeImage:disabled{opacity:.52}
+
+#returnExpenseForm{display:grid;gap:11px}
+#returnExpenseForm>label:not(.warehouse-check){font-size:13px;color:#dae4e1;font-weight:700}
+#returnExpenseForm>input,#returnExpenseForm>select{width:100%;min-height:47px;padding:11px 13px;font-size:16px;border-radius:10px;border:1px solid #526554;background:#11191c;color:#f4f8f2}
+#returnExpenseForm>input:focus-visible,#returnExpenseForm>select:focus-visible{outline:2px solid var(--volt);outline-offset:2px}
