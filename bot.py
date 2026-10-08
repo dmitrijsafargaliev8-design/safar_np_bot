@@ -58,7 +58,7 @@ if not NOVA_POSHTA_API_KEY:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
-RELEASE_VERSION = "2026.10.08-inline-orders-v5"
+RELEASE_VERSION = "2026.10.08-deleted-ttn-v6"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) if TELEGRAM_BOT_TOKEN else None
 np_client = NovaPoshtaClient(NOVA_POSHTA_API_KEY) if NOVA_POSHTA_API_KEY else None
 
@@ -593,7 +593,8 @@ if bot:
             return
         jobs = pipeline.list_orders(message.chat.id, message.from_user.id)
         labels = {"collecting": "в очереди", "processing": "обрабатывается", "created": "готово",
-                  "invalid": "нужны данные", "failed": "ошибка", "uncertain": "проверить в НП"}
+                  "invalid": "нужны данные", "failed": "ошибка", "uncertain": "проверить в НП",
+                  "deleted": "удалена в НП"}
         lines = []
         for job in jobs:
             order = job.get("order") or {}
@@ -837,7 +838,7 @@ def webhook():
         command = text.split(None, 1)[0].split("@", 1)[0] if text.startswith("/") else ""
         if command == "/retry":
             if not message.get("reply_to_message"):
-                bot.send_message(chat_id, "Ответь командой /retry на сообщение с ошибкой заказа.")
+                bot.send_message(chat_id, "Ответь командой /retry на карточку заказа. Если ТТН удалена в НП, создам новую.")
                 pipeline.remember_update(update_id)
             else:
                 try:

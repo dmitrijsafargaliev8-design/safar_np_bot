@@ -107,7 +107,11 @@ class OrderPipeline:
             text = message.get("text") or message.get("caption") or ""
             if text and not retry:
                 job["anchor_id"] = message_id
-            if job["state"] == "created":
+            if job["state"] == "deleted" and self.attachments(job) != previous_media:
+                self._remember_completed_bundle(job)
+            if job["state"] == "created" and retry:
+                job.update(state="collecting", notified=False, attempts=0, due=self.clock())
+            elif job["state"] == "created":
                 if linked or (edited and old and text != (old.get("text") or old.get("caption") or "")):
                     job["notice"] = "ТТН уже создана. Изменение текста не меняет готовую накладную."
                     job["notified"] = False
@@ -174,14 +178,34 @@ class OrderPipeline:
 
     def _remember_completed_bundle(self, job):
         """A fuller album is still the same shipment when it is forwarded again."""
-        if job["state"] != "created" or not job.get("order") or not job.get("result"):
+        if job["state"] not in {"created", "deleted"} or not job.get("order") or not job.get("result"):
             return
         identity = self._identity(job, job["order"])
         if identity != job.get("identity"):
+            # New album identities follow the current receipt even when an old
+            # card receives another photo while its deleted TTN is replaced.
+            current = self.db.execute("SELECT * FROM receipts WHERE identity=?", (job.get("identity"),)).fetchone()
             self.db.execute(
                 "INSERT INTO receipts VALUES (?,?,?,?) ON CONFLICT(identity) DO NOTHING",
-                (identity, "created", _json({"result": job["result"], "order": job["order"]}), self.clock()),
+                (identity, current["state"] if current else job["state"],
+                 current["result"] if current else _json({"result": job["result"], "order": job["order"]}), self.clock()),
             )
+
+    def _save_receipt(self, job, state, receipt):
+        """Move every album alias to the same replacement, in one transaction."""
+        previous = job.get("replaced_ttn")
+        aliases = self.db.receipts_for_ttn(previous) if previous else []
+        identities = {job["identity"], *(row["identity"] for row in aliases)}
+        for identity in identities:
+            self.db.execute("UPDATE receipts SET state=?, result=?, updated=? WHERE identity=?",
+                            (state, _json(receipt), self.clock(), identity))
+
+    def _retry_status_check(self, job, error):
+        job["attempts"] += 1
+        if job["attempts"] < 3:
+            job.update(state="collecting", due=self.clock() + 3 * 2 ** job["attempts"])
+        else:
+            job.update(state="failed", error=error, due=self.clock(), notified=False)
 
     def _parse(self, job):
         if job.get("override"):
@@ -213,22 +237,54 @@ class OrderPipeline:
             job.update(state="invalid", error=str(exc), due=self.clock(), notified=False)
             return
         job["order"] = order
+        job.pop("duplicate", None)
+        job.pop("replaced_ttn", None)
+        job.pop("notice", None)
         identity = job["identity"] = self._identity(job, order)
-        with self.lock, self.db:
+        with self.lock:
             row = self.db.execute("SELECT * FROM receipts WHERE identity=?", (identity,)).fetchone()
-            if row:
-                if row["state"] == "created":
-                    receipt = json.loads(row["result"])
-                    original_order = receipt.get("order") or order
+        receipt = {"order": order}
+        if row:
+            if row["state"] not in {"created", "deleted"}:
+                job.update(state="uncertain", error="По этому заказу уже было создание ТТН без подтверждённого результата. Проверь накладные в Новой Почте.",
+                           due=self.clock(), notified=False)
+                return
+            receipt = json.loads(row["result"])
+            previous_result = receipt.get("result") or receipt
+            original_order = receipt.get("order") or order
+            if row["state"] == "created":
+                try:
+                    deleted = self.client.is_ttn_deleted(previous_result.get("ttn"), phone=original_order.get("phone", ""))
+                    if type(deleted) is not bool:
+                        raise NovaPoshtaTemporaryError("Новая Почта не подтвердила статус ранее созданной ТТН.")
+                except NovaPoshtaError as exc:
+                    self._retry_status_check(job, str(exc))
+                    return
+                except Exception:
+                    logger.exception("Shipment deletion check failed for order %s", job["key"])
+                    self._retry_status_check(job, "Не удалось проверить удаление ТТН. Повтори позже.")
+                    return
+                if not deleted:
                     if original_order != order:
                         job["notice"] = "Этот исходный заказ уже обработан. Показаны данные ранее созданной ТТН."
-                    job.update(state="created", result=receipt.get("result") or receipt, order=original_order, duplicate=True,
+                    job.update(state="created", result=previous_result, order=original_order, duplicate=True,
                                due=self.clock(), notified=False)
-                else:
-                    job.update(state="uncertain", error="По этому заказу уже было создание ТТН без подтверждённого результата. Проверь накладные в Новой Почте.",
-                               due=self.clock(), notified=False)
-                return
-            self.db.execute("INSERT INTO receipts VALUES (?,?,?,?)", (identity, "creating", None, self.clock()))
+                    return
+                history = list(receipt.get("history") or [])
+                history.append({"result": previous_result, "order": original_order, "deleted_at": self.clock()})
+                receipt = {"result": previous_result, "order": order, "history": history}
+            job["replaced_ttn"] = previous_result["ttn"]
+        with self.lock, self.db:
+            if row:
+                self._save_receipt(job, "creating", receipt)
+                for old in self.db.jobs_for_ttn(job["replaced_ttn"]):
+                    archived = json.loads(old["body"])
+                    if archived["key"] != job["key"] and archived["state"] == "created":
+                        archived.update(state="deleted", notified=True)
+                        self.db.execute("UPDATE jobs SET state='deleted', body=? WHERE key=?",
+                                        (_json(archived), archived["key"]))
+            else:
+                self.db.execute("INSERT INTO receipts VALUES (?,?,?,?)", (identity, "creating", None, self.clock()))
             self._write(job)
         try:
             result = self.client.create_ttn(**order)
@@ -237,12 +293,14 @@ class OrderPipeline:
             # Record success before sending Telegram: a failed send never creates
             # another shipment on retry.
             with self.lock, self.db:
-                self.db.execute("UPDATE receipts SET state='created', result=?, updated=? WHERE identity=?",
-                                (_json({"result": result, "order": order}), self.clock(), identity))
+                self._save_receipt(job, "created", {**receipt, "result": result, "order": order})
             job.update(state="created", result=result, due=self.clock(), notified=False)
         except NovaPoshtaTemporaryError as exc:
             with self.lock, self.db:
-                self.db.execute("DELETE FROM receipts WHERE identity=?", (identity,))
+                if job.get("replaced_ttn"):
+                    self._save_receipt(job, "deleted", receipt)
+                else:
+                    self.db.execute("DELETE FROM receipts WHERE identity=?", (identity,))
             job["attempts"] += 1
             if job["attempts"] < 3:
                 job.update(state="collecting", due=self.clock() + 3 * 2 ** job["attempts"])
@@ -250,16 +308,19 @@ class OrderPipeline:
                 job.update(state="failed", error=str(exc), due=self.clock(), notified=False)
         except NovaPoshtaUncertainError as exc:
             with self.lock, self.db:
-                self.db.execute("UPDATE receipts SET state='uncertain' WHERE identity=?", (identity,))
+                self._save_receipt(job, "uncertain", receipt)
             job.update(state="uncertain", error=str(exc), due=self.clock(), notified=False)
         except NovaPoshtaError as exc:
             with self.lock, self.db:
-                self.db.execute("DELETE FROM receipts WHERE identity=?", (identity,))
+                if job.get("replaced_ttn"):
+                    self._save_receipt(job, "deleted", receipt)
+                else:
+                    self.db.execute("DELETE FROM receipts WHERE identity=?", (identity,))
             job.update(state="failed", error=str(exc), due=self.clock(), notified=False)
         except Exception:
             logger.exception("Unexpected shipment failure for order %s", job["key"])
             with self.lock, self.db:
-                self.db.execute("UPDATE receipts SET state='uncertain' WHERE identity=?", (identity,))
+                self._save_receipt(job, "uncertain", receipt)
             job.update(state="uncertain", error="Не удалось подтвердить результат создания ТТН. Проверь накладные в Новой Почте.",
                        due=self.clock(), notified=False)
 
@@ -274,6 +335,8 @@ class OrderPipeline:
                     + (f"Наложка: {order['cod_amount']:g} грн" if order["cod_amount"] else "Без наложки"))
             if job.get("duplicate"):
                 text += "\nЭтот заказ уже обработан; повторная ТТН не создавалась."
+            if job.get("replaced_ttn"):
+                text += f"\nПредыдущая ТТН {job['replaced_ttn']} удалена в НП. Создана новая."
             if job.get("notice"):
                 text += "\n" + job["notice"]
             if result.get("estimated_delivery_date"):

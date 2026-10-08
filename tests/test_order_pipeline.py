@@ -1,5 +1,6 @@
 """Message-to-shipment tests with real parsing and mocked external APIs."""
 import copy
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from bot import parse_order
-from np_client import NovaPoshtaClient, NovaPoshtaTemporaryError, NovaPoshtaUncertainError
+from np_client import NovaPoshtaClient, NovaPoshtaError, NovaPoshtaTemporaryError, NovaPoshtaUncertainError
 from order_pipeline import OrderPipeline
 
 
@@ -34,6 +35,7 @@ class PipelineTests(unittest.TestCase):
         self.now = 1791400000.0
         self.client = Mock()
         self.client.create_ttn.return_value = {"ttn": "20400000000001", "ref": "test-ref"}
+        self.client.is_ttn_deleted.return_value = False
         self.bot = Mock()
         self.sent_id = 10000
         def sent(**kwargs):
@@ -87,6 +89,8 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(properties["RecipientAddress"], "vasylkiv-wh4")
                 self.assertNotIn("BackwardDeliveryData", properties)
                 return [{"IntDocNumber": "20400000000001"}]
+            if (model, method) == ("TrackingDocument", "getStatusDocuments"):
+                return [{"Number": "20400000000001", "StatusCode": "1"}]
             self.fail("Unexpected API operation")
         client._call = Mock(side_effect=api)
         self.pipeline.client = client
@@ -134,6 +138,8 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(properties["Cost"], "800")
                 self.assertNotIn("BackwardDeliveryData", properties)
                 return [{"IntDocNumber": "20400000000001"}]
+            if (model, method) == ("TrackingDocument", "getStatusDocuments"):
+                return [{"Number": "20400000000001", "StatusCode": "1"}]
             self.fail("Unexpected API operation")
         client._call = Mock(side_effect=api)
         self.pipeline.client, self.pipeline.parser = client, parse_order
@@ -230,6 +236,156 @@ class PipelineTests(unittest.TestCase):
         self.drain()
         self.client.create_ttn.assert_called_once()
         self.assertIn("повторная ТТН не создавалась", self.bot.send_photo.call_args.kwargs["caption"])
+        self.client.is_ttn_deleted.assert_called_once_with("20400000000001", phone="380500000001")
+
+    def test_deleted_ttn_can_be_recreated_repeatedly_with_same_photo(self):
+        self.client.create_ttn.side_effect = [
+            {"ttn": f"2040000000000{i}", "ref": f"ref-{i}"} for i in range(1, 5)
+        ]
+        self.client.is_ttn_deleted.return_value = True
+        for mid in range(1, 5):
+            self.pipeline.ingest(message(mid, caption=ORDER, unique="same-photo"), mid)
+            self.drain()
+            self.assertEqual(self.job()["result"]["ttn"], f"2040000000000{mid}")
+            self.assertEqual(self.bot.send_photo.call_args.kwargs["photo"], f"file-{mid}")
+        self.assertEqual(self.client.create_ttn.call_count, 4)
+        self.assertIn("Предыдущая ТТН 20400000000003 удалена", self.bot.send_photo.call_args.kwargs["caption"])
+        receipt = self.pipeline.db.execute("SELECT result FROM receipts").fetchone()
+        self.assertEqual([r["result"]["ttn"] for r in json.loads(receipt["result"])["history"]],
+                         ["20400000000001", "20400000000002", "20400000000003"])
+
+    def test_retry_on_completed_card_checks_deletion_and_preserves_photo(self):
+        self.pipeline.ingest(message(1, caption=ORDER), 1)
+        self.drain()
+        self.client.is_ttn_deleted.return_value = True
+        self.client.create_ttn.return_value = {"ttn": "20400000000002"}
+        retry = message(2, text="/retry", photo=False)
+        retry["reply_to_message"] = {"message_id": self.sent_id}
+        self.pipeline.ingest(retry, 2, retry=True)
+        self.drain()
+        self.assertEqual(self.client.create_ttn.call_count, 2)
+        self.assertEqual(self.bot.send_photo.call_args.kwargs["photo"], "file-1")
+        self.assertIn("20400000000002", self.bot.send_photo.call_args.kwargs["caption"])
+
+    def test_tracking_timeout_preserves_receipt_and_allows_retry(self):
+        self.pipeline.ingest(message(1, caption=ORDER, unique="same"), 1)
+        self.drain()
+        self.client.is_ttn_deleted.side_effect = NovaPoshtaTemporaryError("status unavailable")
+        self.pipeline.ingest(message(2, caption=ORDER, unique="same"), 2)
+        self.drain()
+        for _ in range(2):
+            self.now += 20
+            self.pipeline.tick()
+        self.client.create_ttn.assert_called_once()
+        self.assertEqual(self.job()["state"], "failed")
+        self.assertEqual(self.pipeline.db.execute("SELECT state FROM receipts").fetchone()["state"], "created")
+        self.client.is_ttn_deleted.side_effect = None
+        self.client.is_ttn_deleted.return_value = True
+        self.client.create_ttn.return_value = {"ttn": "20400000000002"}
+        retry = message(3, text="/retry", photo=False)
+        retry["reply_to_message"] = {"message_id": self.sent_id}
+        self.pipeline.ingest(retry, 3, retry=True)
+        self.drain()
+        self.assertEqual(self.client.create_ttn.call_count, 2)
+
+    def test_unknown_check_result_never_unlocks_duplicate(self):
+        self.pipeline.ingest(message(1, caption=ORDER, unique="same"), 1)
+        self.drain()
+        self.client.is_ttn_deleted.return_value = None
+        self.pipeline.ingest(message(2, caption=ORDER, unique="same"), 2)
+        self.drain()
+        self.client.create_ttn.assert_called_once()
+        self.assertEqual(self.job()["state"], "collecting")
+
+    def test_replacement_timeout_stays_uncertain_even_if_old_ttn_deleted(self):
+        self.pipeline.ingest(message(1, caption=ORDER, unique="same"), 1)
+        self.drain()
+        self.client.is_ttn_deleted.return_value = True
+        self.client.create_ttn.side_effect = NovaPoshtaUncertainError("save timeout")
+        self.pipeline.ingest(message(2, caption=ORDER, unique="same"), 2)
+        self.drain()
+        self.pipeline.ingest(message(3, caption=ORDER, unique="same"), 3)
+        self.drain()
+        self.assertEqual(self.client.create_ttn.call_count, 2)
+        self.assertEqual(self.job()["state"], "uncertain")
+        self.assertEqual(self.client.is_ttn_deleted.call_count, 1)
+
+    def test_restart_during_replacement_save_never_creates_third_ttn(self):
+        class SimulatedCrash(BaseException):
+            pass
+        with tempfile.TemporaryDirectory() as folder:
+            path = str(Path(folder) / "orders.sqlite3")
+            pipeline = self.make_pipeline(path)
+            pipeline.ingest(message(1, caption=ORDER, unique="same"), 1)
+            self.now += 4
+            pipeline.tick()
+            self.client.is_ttn_deleted.return_value = True
+            self.client.create_ttn.side_effect = SimulatedCrash()
+            pipeline.ingest(message(2, caption=ORDER, unique="same"), 2)
+            self.now += 4
+            with self.assertRaises(SimulatedCrash):
+                pipeline.tick()
+            pipeline.close()
+            resumed = self.make_pipeline(path)
+            try:
+                resumed.tick()
+                self.assertEqual(self.client.create_ttn.call_count, 2)
+                self.assertEqual(resumed.list_orders(100, 99)[0]["state"], "uncertain")
+                self.assertEqual(resumed.db.execute("SELECT state FROM receipts").fetchone()["state"], "uncertain")
+            finally:
+                resumed.close()
+
+    def test_known_replacement_failure_can_retry_without_losing_deletion(self):
+        self.pipeline.ingest(message(1, caption=ORDER, unique="same"), 1)
+        self.drain()
+        self.client.is_ttn_deleted.return_value = True
+        self.client.create_ttn.side_effect = [NovaPoshtaError("rejected"), {"ttn": "20400000000002"}]
+        self.pipeline.ingest(message(2, caption=ORDER, unique="same"), 2)
+        self.drain()
+        self.assertEqual(self.pipeline.db.execute("SELECT state FROM receipts").fetchone()["state"], "deleted")
+        self.pipeline.ingest(message(3, caption=ORDER, unique="same"), 3)
+        self.drain()
+        self.assertEqual(self.job()["result"]["ttn"], "20400000000002")
+        self.assertEqual(self.client.is_ttn_deleted.call_count, 1)
+
+    def test_replacement_updates_all_completed_album_aliases(self):
+        first = message(1, caption=ORDER, group="album", unique="first")
+        self.pipeline.ingest(first, 1)
+        self.drain()
+        self.pipeline.ingest(message(2, group="album", unique="second"), 2)
+        self.drain()
+        self.client.is_ttn_deleted.return_value = True
+        self.client.create_ttn.return_value = {"ttn": "20400000000002"}
+        # Recreate from the shorter version of the same album.
+        self.pipeline.ingest(message(3, caption=ORDER, unique="first"), 3)
+        self.drain()
+        self.client.is_ttn_deleted.return_value = False
+        self.pipeline.ingest(message(4, caption=ORDER, group="repeat", unique="first"), 4)
+        self.pipeline.ingest(message(5, group="repeat", unique="second"), 5)
+        self.drain()
+        self.assertEqual(self.client.create_ttn.call_count, 2)
+        self.assertEqual(self.job()["result"]["ttn"], "20400000000002")
+        self.client.is_ttn_deleted.assert_called_with("20400000000002", phone="380500000001")
+
+    def test_late_photo_during_replacement_follows_new_receipt(self):
+        self.pipeline.ingest(message(1, caption=ORDER, group="album", unique="first"), 1)
+        self.drain()
+        def replace(**kwargs):
+            self.pipeline.ingest(message(2, group="album", unique="second"), 2)
+            return {"ttn": "20400000000002"}
+        self.client.is_ttn_deleted.return_value = True
+        self.client.create_ttn.side_effect = replace
+        self.pipeline.ingest(message(3, caption=ORDER, unique="first"), 3)
+        self.drain()
+        self.client.is_ttn_deleted.return_value = False
+        self.now += 4
+        self.pipeline.tick()
+        self.assertEqual(self.client.create_ttn.call_count, 2)
+        self.pipeline.ingest(message(4, caption=ORDER, group="repeat", unique="first"), 4)
+        self.pipeline.ingest(message(5, group="repeat", unique="second"), 5)
+        self.drain()
+        self.assertEqual(self.client.create_ttn.call_count, 2)
+        self.assertEqual(self.job()["result"]["ttn"], "20400000000002")
 
     def test_different_product_photo_is_a_different_order(self):
         self.pipeline.ingest(message(1, caption=ORDER), 1)
