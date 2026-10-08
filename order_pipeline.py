@@ -67,6 +67,8 @@ class OrderPipeline:
             self.db.execute("INSERT INTO updates VALUES (?,?) ON CONFLICT(id) DO NOTHING", (update_id, self.clock()))
 
     def _sender_client(self, profile_id):
+        if profile_id == "default":
+            return self.client
         if profile_id not in self.sender_clients:
             raise NovaPoshtaError("Профиль отправителя недоступен; ТТН не создавалась.")
         return self.sender_clients[profile_id]
