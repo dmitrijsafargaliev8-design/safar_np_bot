@@ -74,3 +74,20 @@ button:focus-visible,textarea:focus-visible{outline:2px solid var(--volt);outlin
 .return-case-actions>.button-quiet{flex:1 1 130px}
 .return-case-actions>.button-quiet svg{width:17px;height:17px}
 @media(max-width:780px){.return-case-list{grid-template-columns:1fr}.return-case-card{padding:16px}.return-case-actions>.button-quiet{min-height:46px}}
+
+/* Operator carrier radar: verified provider updates only, no implied live feed. */
+.radar-panel{margin-bottom:18px;border-color:#3b5348;background:linear-gradient(110deg,#151e1a,#11171d)}
+.radar-panel>.panel-header>div{display:grid;gap:5px}
+.radar-panel>.panel-header h3{font-size:18px}
+.radar-panel>.muted-text{margin:2px 0 18px;line-height:1.6}
+.radar-list{display:grid;gap:8px}
+.radar-row{width:100%;display:flex;align-items:center;gap:13px;text-align:left;padding:15px;border:1px solid #384339;background:#111820;border-radius:12px;color:var(--ink)}
+.radar-row:hover{border-color:#768c5d;background:#1a2623}
+.radar-dot{width:9px;height:9px;background:#7d97ad;border-radius:50%;flex:none}
+.radar-dot.radar-complete{background:var(--volt)}
+.radar-name,.radar-status{display:grid;gap:5px;min-width:0}
+.radar-name{flex:1}
+.radar-name strong,.radar-status strong{font-size:12px;line-height:1.4}
+.radar-name small,.radar-status small{font-size:11px;color:#bac2c8}
+.radar-status{text-align:right;flex:0 1 46%}
+@media(max-width:380px){.radar-row{padding:12px;gap:9px}.radar-status{flex:0 1 48%}.radar-name strong,.radar-status strong{font-size:11px}}
