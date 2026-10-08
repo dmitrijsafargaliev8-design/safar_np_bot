@@ -214,6 +214,13 @@ def _split_city_area_line(line: str):
     Do not invent a location or change spelling. Nova Poshta still checks the
     exact city+area via its address directory before a TTN can be created.
     """
+    # A line containing a branch, a phone or a price is a FULL order segment,
+    # not just a location. Leave its parsing to the existing full-order path.
+    # For example: "Киевская обл, Васильков, нп 4, ...".
+    if any(pattern.search(line or "") for pattern in (
+        WAREHOUSE_RE, PHONE_RE, COST_RE, COD_RE,
+    )):
+        return None
     match = (CITY_AREA_RE.fullmatch(line or "")
              or AREA_CITY_RE.fullmatch(line or "")
              or PREFIXED_CITY_AREA_RE.fullmatch(line or ""))
