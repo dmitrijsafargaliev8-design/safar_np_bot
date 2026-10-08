@@ -193,9 +193,11 @@ function returnScreen() {
  const cases=view.returnCases || [];
  const labels={refused_by_recipient:language==="ru"?"Отказ получателя":"Відмова одержувача",unclaimed:language==="ru"?"Не забрали":"Не забрали",easy_return_after_delivery:language==="ru"?"Лёгкий возврат":"Легке повернення",customer_exchange:language==="ru"?"Обмен":"Обмін",other:language==="ru"?"Другая причина":"Інша причина"};
  const item=c=>{
+  const received=c.warehouse_state==="received";
+  const warehouseLabel=received?(language==="ru"?"Принято на складе":"Прийнято на складі"):t("returnWarehouse");
   const tr=view.returnTracking[c.id], busy=!!view.returnTrackingBusy[c.id], err=view.returnTrackingErrors[c.id];
-  const latest=tr && tr.status ? `<div class="return-carrier" role="status"><div class="eyebrow">NOVA POSHTA / ${esc(t("checked"))} ${esc(dateStr(tr.checked_at))}</div><strong>${esc(tr.status)}</strong><p>${esc(t("returnWarehouse"))} · ${esc(language==="ru"?"Финансы не подтверждены":"Фінанси не підтверджені")}</p></div>` : `<p class="muted-text">${esc(t("returnUnknown"))}</p>`;
-  return `<article class="return-case-card"><div class="return-case-head"><div><div class="eyebrow">REVERSE / CASE</div><h3>${esc(labels[c.reason] || labels.other)}</h3><p class="selectable">${esc(c.outbound_ttn)}</p></div><span class="state state-uncertain">${esc(t("returnWarehouse"))}</span></div><div class="return-case-meta">${esc(dateStr(c.created_at))} · ${esc(c.sender_profile)}</div>${latest}${err ? `<p class="form-error" role="alert">${esc(err)}</p>` : ""}<div class="return-case-actions">${button("track-return",t(busy ? "trackingLoading" : "tracking"),"refresh",busy || view.offline,"button-quiet",`data-case-id="${esc(c.id)}"`)}${c.reason==="easy_return_after_delivery" && !c.reverse_ttn ? button("open-easy-link",language==="ru"?"Связать обратную ТТН":"Пов’язати зворотну ТТН","link",view.offline,"button-quiet",`data-case-id="${esc(c.id)}"`) : ""}<button class="button-quiet" data-order="${esc(c.order_id)}">${icon("arrow")}${esc(t("detail"))}</button></div></article>`;
+  const latest=tr && tr.status ? `<div class="return-carrier" role="status"><div class="eyebrow">NOVA POSHTA / ${esc(t("checked"))} ${esc(dateStr(tr.checked_at))}</div><strong>${esc(tr.status)}</strong><p>${esc(warehouseLabel)} · ${esc(language==="ru"?"Финансы не подтверждены":"Фінанси не підтверджені")}</p></div>` : `<p class="muted-text">${esc(t("returnUnknown"))}</p>`;
+  return `<article class="return-case-card"><div class="return-case-head"><div><div class="eyebrow">REVERSE / CASE</div><h3>${esc(labels[c.reason] || labels.other)}</h3><p class="selectable">${esc(c.outbound_ttn)}</p></div><span class="state ${received?"state-created":"state-uncertain"}">${esc(warehouseLabel)}</span></div><div class="return-case-meta">${esc(dateStr(c.created_at))} · ${esc(c.sender_profile)}</div>${latest}${err ? `<p class="form-error" role="alert">${esc(err)}</p>` : ""}<div class="return-case-actions">${button("track-return",t(busy ? "trackingLoading" : "tracking"),"refresh",busy || view.offline,"button-quiet",`data-case-id="${esc(c.id)}"`)}${!received ? button("open-warehouse",language==="ru"?"Принять на склад":"Прийняти на склад","check",view.offline || demo,"button-primary",`data-case-id="${esc(c.id)}"`) : ""}${c.reason==="easy_return_after_delivery" && !c.reverse_ttn ? button("open-easy-link",language==="ru"?"Связать обратную ТТН":"Пов’язати зворотну ТТН","link",view.offline,"button-quiet",`data-case-id="${esc(c.id)}"`) : ""}<button class="button-quiet" data-order="${esc(c.order_id)}">${icon("arrow")}${esc(t("detail"))}</button></div></article>`;
  };
  return `<div class="screen">${title("REVERSE / LOGISTICS",t("returns"),t("returnHelp"))}${view.returnsError ? errorPanel(view.returnsError,"refresh-returns") : ""}<div class="panel"><div class="panel-header"><h3>${esc(t("returns"))}</h3><span class="panel-small">${cases.length} ${esc(t("records"))}</span>${button("refresh-returns",t("refresh"),"refresh",view.returnsLoading || view.offline)}</div>${view.returnsLoading ? skeleton(3) : cases.length ? `<div class="return-case-list">${cases.map(item).join("")}</div>` : empty(t("returnEmpty"),t("returnHelp"))}</div></div>`;
 }
@@ -426,6 +428,33 @@ async function submitEasyReturnLink() {
  } catch(error) {if(epoch===sessionEpoch&&err)err.textContent=error.message;}
  finally {view.saving=false;for(const control of dialog.querySelectorAll("button"))control.disabled=false;}
 }
+function openWarehouseReceipt(id) {
+ const c=view.returnCases.find(x=>x.id===id);
+ if(!c || c.warehouse_state==="received" || demo || view.offline) return;
+ const dialog=document.getElementById("actionDialog");
+ dialog.warehouseCaseId=id;
+ const titleText=language==="ru"?"Подтвердить физическое получение":"Підтвердити фактичне отримання";
+ const hint=language==="ru"?"Только после фактической приёмки посылки на вашем складе. Впишите номер исходной или проверенной обратной ТТН. Действие будет записано в журнале, финансы не изменятся.":"Тільки після фактичного приймання посилки на складі. Введіть номер початкової або підтвердженої зворотної ТТН. Дія буде записана в журналі, фінанси не зміняться.";
+ const checkedLabel=language==="ru"?"Подтверждаю, что посылка физически получена":"Підтверджую фактичне отримання посилки";
+ dialog.innerHTML=`<div class="dialog-top"><div><div class="eyebrow">SAFAR / WAREHOUSE AUDIT</div><h2 id="actionTitle">${esc(titleText)}</h2></div>${button("close-dialog",t("close"),"close",false,"icon-button")}</div><p class="muted-text">${esc(hint)}</p><form id="warehouseReceiptForm"><label for="warehouseTtn">${esc(t("waybill"))} · ${esc(c.outbound_ttn)}${c.reverse_ttn?` / ${esc(c.reverse_ttn)}`:""}</label><input id="warehouseTtn" inputmode="numeric" required autocomplete="off" maxlength="14" pattern="[0-9]{14}" placeholder="20400000000000"><label class="warehouse-check"><input id="warehouseAcknowledged" type="checkbox" required><span>${esc(checkedLabel)}</span></label><div class="form-error" role="alert" id="warehouseReceiptError"></div><div class="form-actions"><button type="submit" class="button-primary">${icon("check")}${esc(titleText)}</button>${button("close-dialog",t("cancel"),"close")}</div></form>`;
+ openDialog(dialog); document.getElementById("warehouseTtn")?.focus({preventScroll:true});
+}
+async function submitWarehouseReceipt() {
+ const dialog=document.getElementById("actionDialog"),id=dialog.warehouseCaseId;
+ const ttn=document.getElementById("warehouseTtn")?.value || "";
+ const acknowledged=document.getElementById("warehouseAcknowledged")?.checked === true;
+ const error=document.getElementById("warehouseReceiptError");
+ if(!id || !/^[0-9]{14}$/.test(ttn) || !acknowledged) {if(error)error.textContent=t("validation");return;}
+ const epoch=sessionEpoch; view.saving=true;
+ for(const b of dialog.querySelectorAll("button")) b.disabled=true;
+ try {
+  const result=await jsonRequest("/api/safar/returns/"+encodeURIComponent(id)+"/warehouse-receipt",{method:"POST",body:JSON.stringify({chat_id:view.chatId,ttn,physically_received:true})});
+  if(epoch!==sessionEpoch) return;
+  view.saving=false;view.returnCases=view.returnCases.map(c=>c.id===id?result.case:c);
+  closeDialog();render();toast(language==="ru"?"Получение записано в журнал":"Отримання записано до журналу");
+ } catch(e) {if(epoch===sessionEpoch && error)error.textContent=e.message;}
+ finally {view.saving=false;for(const b of dialog.querySelectorAll("button"))b.disabled=false;}
+}
 let dialogReturnFocus = null;
 function openDialog(dialog) { dialogReturnFocus = document.activeElement; if (!dialog.open) dialog.showModal(); document.body.classList.add('dialog-open'); }
 function closeDialog() { if (view.saving) return; for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close(); view.photo = null; document.body.classList.remove('dialog-open'); if (dialogReturnFocus?.isConnected) dialogReturnFocus.focus({preventScroll:true}); dialogReturnFocus = null; }
@@ -536,6 +565,7 @@ document.addEventListener('click',async event => {
  if (action === 'refresh-returns') return fetchReturns();
  if (action === 'track-return') return fetchReturnTracking(control.dataset.caseId);
  if (action === 'open-easy-link') return openEasyReturnLink(control.dataset.caseId);
+ if (action === 'open-warehouse') return openWarehouseReceipt(control.dataset.caseId);
  if (action === 'open-return') return openReturnDialog();
  if (action === 'load-more') return fetchOrders(true);
  if (action === 'clear-filters') { view.search = ''; view.filter = 'all'; view.sender = ''; view.period = 'all'; return fetchOrders(); }
@@ -563,7 +593,7 @@ document.addEventListener('click',async event => {
  if (action === 'pair-cancel') { pairSequence++; clearTimeout(pairingTimer); view.pair = null; view.pairBusy = false; view.pairError = ''; render(); return; }
  if (action === 'install' && view.installPrompt) { const prompt = view.installPrompt; view.installPrompt = null; await prompt.prompt(); render(); }
 });
-document.addEventListener('submit',event => { if (event.target.id === 'correctionForm') { event.preventDefault(); reviewCorrection(); } else if (event.target.id === 'returnForm') { event.preventDefault(); createReturnCase(); } else if (event.target.id === 'intakeForm') { event.preventDefault(); submitIntake(); } else if (event.target.id === 'easyReturnLinkForm') { event.preventDefault(); submitEasyReturnLink(); } });
+document.addEventListener('submit',event => { if (event.target.id === 'correctionForm') { event.preventDefault(); reviewCorrection(); } else if (event.target.id === 'returnForm') { event.preventDefault(); createReturnCase(); } else if (event.target.id === 'intakeForm') { event.preventDefault(); submitIntake(); } else if (event.target.id === 'easyReturnLinkForm') { event.preventDefault(); submitEasyReturnLink(); } else if (event.target.id === 'warehouseReceiptForm') { event.preventDefault(); submitWarehouseReceipt(); } });
 document.addEventListener('input',event => {
  if (event.target.id === 'orderSearch') { view.search = event.target.value; clearTimeout(searchTimer); searchTimer = setTimeout(() => { view.orders = []; fetchOrders(); },300); }
  if (event.target.closest('#correctionForm')) { if (view.editDraft) view.editDraft[event.target.name] = event.target.value; }
