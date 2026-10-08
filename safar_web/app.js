@@ -445,7 +445,7 @@ async function switchTab(tab) {
  if (tab === 'shipments') await fetchShipmentRadar();
  if (tab === 'home') await fetchAnalytics();
  if (tab === 'senders') await fetchSenders();
- if (tab === 'returns') await fetchReturns();
+ if (tab === 'returns') { await fetchReturns(); await refreshReturnTracking(); }
 }
 async function fetchReturns() {
  const epoch=sessionEpoch;
@@ -464,7 +464,14 @@ async function fetchReturnTracking(id) {
  } catch(error) { if(epoch===sessionEpoch) view.returnTrackingErrors[id]=error.message; }
  finally { if(epoch===sessionEpoch) { delete view.returnTrackingBusy[id]; render(); } }
 }
-async function refreshCurrent() { if (view.selected) return fetchDetail(view.selected); if (view.tab === 'senders') return fetchSenders(); if (view.tab === 'returns') return fetchReturns(); if (view.tab === 'shipments') {await fetchOrders(); return fetchShipmentRadar();} const tasks = [fetchOrders()]; if (view.tab === 'home') tasks.push(fetchAnalytics()); await Promise.allSettled(tasks); }
+async function refreshReturnTracking() {
+ if (view.offline || view.tab !== "returns" || demo) return;
+ const now=Date.now()/1000;
+ const cases=view.returnCases.filter(c=>!view.returnTrackingBusy[c.id]
+   && now - (Number(view.returnTracking[c.id]?.checked_at)||0) > 180).slice(0,2);
+ await Promise.allSettled(cases.map(c=>fetchReturnTracking(c.id)));
+}
+async function refreshCurrent() { if (view.selected) return fetchDetail(view.selected); if (view.tab === 'senders') return fetchSenders(); if (view.tab === 'returns') { await fetchReturns(); return refreshReturnTracking(); } if (view.tab === 'shipments') {await fetchOrders(); return fetchShipmentRadar();} const tasks = [fetchOrders()]; if (view.tab === 'home') tasks.push(fetchAnalytics()); await Promise.allSettled(tasks); }
 async function logout() {
  try { await jsonRequest('/api/safar/logout',{method:'POST',body:'{}'}); sessionChannel?.postMessage('logout'); clearSession(); toast(t('loggedOut')); }
  catch (error) { toast(error.message); }
@@ -478,6 +485,15 @@ async function reconnect() {
   view.offline = false; await boot();
  } catch (_) { view.offline = true; view.loading = false; view.pairError = t('networkError'); render(); }
 }
+// Foreground-only refresh: this is not a 24/7 scheduler or background tracking service.
+// Cap provider calls and rely on the server cache. Never store private data on disk.
+setInterval(() => {
+ if (demo || document.hidden || !navigator.onLine || view.offline || !view.authed
+     || view.selected || view.saving || view.listLoading || view.returnsLoading) return;
+ if (view.tab === "shipments") fetchShipmentRadar();
+ else if (view.tab === "returns") fetchReturns().then(refreshReturnTracking);
+ else if (view.tab === "home" || view.tab === "orders") fetchOrders();
+}, 120000);
 document.addEventListener('click',async event => {
  const control = event.target.closest('[data-tab],[data-filter],[data-order],[data-action],[data-language],[data-photo]');
  if (!control || control.disabled) return;
