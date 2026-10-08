@@ -461,8 +461,8 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
         data = upload.stream.read(2 * 1024 * 1024 + 1)
         if not 16 <= len(data) <= 2 * 1024 * 1024:
             abort(413)
-        kind = ("image/jpeg" if data.startswith(b"\\xff\\xd8\\xff") else
-                "image/png" if data.startswith(b"\\x89PNG\\r\\n\\x1a\\n") else "")
+        kind = ("image/jpeg" if data.startswith(b"\xff\xd8\xff") else
+                "image/png" if data.startswith(b"\x89PNG\r\n\x1a\n") else "")
         if kind != upload.mimetype:
             abort(415)
         text = request.form.get("text", "")
@@ -512,10 +512,13 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
                 if not photos:
                     abort(502)
                 photo = max(photos, key=lambda p: p["width"] * p["height"])
-                with pipe.db:
-                    job, created = pipe.ingest_app_text(
-                        chat, session.user_id, text, request_id, photo=photo)
-                    if created:
+                job, created = pipe.ingest_app_text(
+                    chat, session.user_id, text, request_id, photo=photo)
+                if created:
+                    # Journal access is serialized by the same pipeline lock.
+                    # Avoid nesting OrderJournal DB transaction context managers
+                    # (Postgres has a single explicit transaction owner).
+                    with pipe.db:
                         job["app_image_sha256"] = digest
                         pipe._write(job)
                 return jsonify(order=public_order(job), accepted=created,
