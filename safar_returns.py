@@ -147,3 +147,61 @@ def carrier_snapshot(pipe, chat_id, owner_id, case_id):
         "finance_state": case["finance_state"],
         "source": "nova_poshta",
     }
+
+
+def link_verified_easy_return(pipe, chat_id, owner_id, case_id, reverse_ttn):
+    """Associate incoming Easy Return TTN ONLY on NP's verified original link.
+
+    Official getStatusDocuments for incoming Easy Return exposes
+    LightReturnNumber (original outbound TTN). This never orders a new return,
+    alters COD, marks warehouse received or confirms a financial transaction.
+    """
+    if not isinstance(reverse_ttn, str) or not re.fullmatch(r"\d{14}", reverse_ttn):
+        raise ValueError("Invalid incoming return TTN")
+    case = get_case(pipe, chat_id, owner_id, case_id)
+    if case is None:
+        return None
+    if case["reason"] != "easy_return_after_delivery":
+        raise ValueError("Only an Easy Return can use this verified link")
+    if reverse_ttn == case["outbound_ttn"]:
+        raise ValueError("Inbound return TTN must differ from original TTN")
+    # Carrier read uses the ORIGINAL sender account, never current preference.
+    sender = pipe._sender_client(case["sender_profile"])
+    observed = sender.get_ttn_status(reverse_ttn)
+    if (not isinstance(observed, dict)
+        or str(observed.get("Number") or "") != reverse_ttn
+        or str(observed.get("LightReturnNumber") or "") != case["outbound_ttn"]):
+        raise ValueError("Carrier did not verify Easy Return association")
+    status_code = str(observed.get("StatusCode") or "").strip()
+    if not status_code.isdigit() or int(status_code) in {0, 3}:
+        raise ValueError("Carrier could not verify incoming return TTN")
+    with pipe.lock, pipe.db:
+        row = pipe.db.execute(
+            "SELECT * FROM return_cases WHERE id=? AND chat_id=? AND owner_id=?",
+            (case_id, chat_id, owner_id),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["outbound_ttn"] != case["outbound_ttn"] or row["sender_profile"] != case["sender_profile"]:
+            raise ValueError("Return case changed during carrier verification")
+        if row["reverse_ttn"]:
+            if row["reverse_ttn"] != reverse_ttn:
+                raise ValueError("A different incoming TTN is already linked")
+            return _public(row), False
+        now = time.time()
+        pipe.db.execute(
+            "UPDATE return_cases SET reverse_ttn=?, updated=? WHERE id=?",
+            (reverse_ttn, now, case_id),
+        )
+        pipe.db.execute(
+            "INSERT INTO return_events (id,case_id,actor_id,at,event_type,details) "
+            "VALUES (?,?,?,?,?,?)",
+            (uuid.uuid4().hex, case_id, owner_id, now, "verified_easy_return_link",
+             json.dumps({"reverse_ttn": reverse_ttn, "source": "nova_poshta",
+                         "method": "TrackingDocument/getStatusDocuments"},
+                        ensure_ascii=False, separators=(",", ":"))),
+        )
+        updated = pipe.db.execute(
+            "SELECT * FROM return_cases WHERE id=?", (case_id,)
+        ).fetchone()
+        return _public(updated), True
