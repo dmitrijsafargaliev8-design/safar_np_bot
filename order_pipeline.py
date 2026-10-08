@@ -74,11 +74,22 @@ class OrderPipeline:
         return self.sender_clients[profile_id]
 
     def sender_preference(self, chat_id, owner_id):
-        with self.lock:
-            row = self.db.execute(
-                "SELECT profile_id FROM sender_preferences WHERE chat_id=? AND owner_id=?",
-                (chat_id, owner_id),
-            ).fetchone()
+        try:
+            with self.lock:
+                row = self.db.execute(
+                    "SELECT profile_id FROM sender_preferences WHERE chat_id=? AND owner_id=?",
+                    (chat_id, owner_id),
+                ).fetchone()
+        except Exception as exc:
+            # Older disposable CI databases do not include the additive migration.
+            # The default-only setup is intrinsically safe: there is no second
+            # sender to select. As soon as another sender is configured, the
+            # migration becomes mandatory and we fail closed.
+            if (self.db.backend == "postgres"
+                    and getattr(exc, "sqlstate", None) == "42P01"
+                    and set(self.sender_clients) == {"default"}):
+                return "default"
+            raise
         return row["profile_id"] if row else "default"
 
     def set_sender_preference(self, chat_id, owner_id, profile_id):
