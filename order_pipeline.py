@@ -142,16 +142,28 @@ class OrderPipeline:
             if linked and (message.get("text") or message.get("caption")) and not retry:
                 correction = message.get("text") or message.get("caption")
                 patch = parse_field_patch(correction)
-                if patch is not None and job.get("order") is not None:
+                if patch is not None:
                     if job["state"] in {"processing", "uncertain"}:
                         raise ValueError("Создание ТТН не подтверждено. Исправления временно заблокированы.")
-                    base = self._parse(job)
-                    pending = dict(job.get("pending_edits") or {})
-                    pending.update(patch)
-                    apply_field_patch(base, pending)  # validate before writing anything
-                    job["pending_edits"] = pending
-                    job["notice"] = ("Сохранена правка: " + patch_labels(pending)
-                                     + ". Удали действующую ТТН в НП и ответь /retry на карточку.")
+                    if job.get("order") is not None:
+                        base = self._parse(job)
+                        pending = dict(job.get("pending_edits") or {})
+                        pending.update(patch)
+                        apply_field_patch(base, pending)  # validate before writing anything
+                        job["pending_edits"] = pending
+                        if job["state"] == "created":
+                            job["notice"] = ("Сохранена правка: " + patch_labels(pending)
+                                             + ". Удали действующую ТТН в НП и ответь /retry на карточку.")
+                    else:
+                        # If an incomplete forwarded order has no parsed record,
+                        # append explicit field labels instead of replacing the
+                        # original text/photos with a one-line correction.
+                        previous = job.get("override") or "\n".join(
+                            dict.fromkeys((m.get("text") or m.get("caption") or "").strip()
+                                              for m in job["messages"]
+                                              if (m.get("text") or m.get("caption") or "").strip())
+                        )
+                        job["override"] = previous.rstrip() + "\n" + correction
                 else:
                     job["override"] = correction
                     job.pop("pending_edits", None)
