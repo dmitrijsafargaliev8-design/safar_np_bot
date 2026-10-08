@@ -62,7 +62,7 @@ if not NOVA_POSHTA_API_KEY:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
-RELEASE_VERSION = "2026.10.08-smart-edits-senders-rc2"
+RELEASE_VERSION = "2026.10.08-fop-primary-rc3"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) if TELEGRAM_BOT_TOKEN else None
 np_client = NovaPoshtaClient(NOVA_POSHTA_API_KEY) if NOVA_POSHTA_API_KEY else None
 sender_profiles = SenderProfiles(np_client) if np_client else None
@@ -550,6 +550,7 @@ BOT_COMMANDS = (
     ("queue", "Заказы в очереди и с ошибками"),
     ("stats", "Статистика обработки заказов"),
     ("sender", "Выбрать профиль отправителя"),
+    ("sendercheck", "Проверка основного отправителя без создания ТТН"),
     ("whoami", "Мой Telegram ID для настройки доступа"),
     ("track", "Проверить статус ТТН"),
     ("retry", "Повторить заказ или пересоздать удалённую ТТН"),
@@ -577,6 +578,7 @@ HELP_TEXT = (
     "Для повтора ответь /retry. Если прежняя ТТН удалена в Новой почте, бот создаст новую; действующую повторно не создаёт.\n\n"
     "Для исправления одного поля ответь на карточку: Телефон: +380... или Оценка: 1600.\n"
     "/sender — текущий профиль; /sender ID — переключить для будущих заказов.\n"
+    "/sendercheck — безопасная проверка ФОП/кабинета НП без отправки.\n"
     "/example — образец заказа.\n/menu — все команды."
 )
 _telegram_commands = []
@@ -638,16 +640,18 @@ def register_command_handlers(telegram_bot):
         except Exception as exc:
             logger.warning("Telegram status failed: %s", exc)
 
-        if np_client:
+        active_client = (sender_profiles.get(sender_profiles.primary_profile)
+                         if sender_profiles else np_client)
+        if active_client:
             try:
-                np_ok = np_client.ping()
+                np_ok = active_client.ping()
                 try:
-                    np_client.get_sender_info()
+                    active_client.get_sender_info()
                     sender_status = "OK"
                 except Exception as exc:
                     sender_status = f"нужна настройка: {exc}"
             except Exception as exc:
-                logger.warning("Nova Poshta status failed: %s", exc)
+                logger.warning("Nova Poshta status failed: %s", type(exc).__name__)
 
         telegram_bot.reply_to(
             message,
@@ -736,6 +740,7 @@ def register_command_handlers(telegram_bot):
         parts = (message.text or "").split(None, 1)
         if len(parts) == 1:
             lines = ["📦 ОТПРАВИТЕЛЬ",
+                     f"Основной по умолчанию: {sender_profiles.primary_profile}",
                      f"Текущий: {profiles.get(current, 'профиль недоступен')} ({current})",
                      "Доступные профили:"]
             lines += [f"• {pid} — {label}" for pid, label in profiles.items()]
@@ -747,12 +752,38 @@ def register_command_handlers(telegram_bot):
         if profile_id not in profiles:
             telegram_bot.reply_to(message, "Неизвестный профиль. Напиши /sender для списка.")
             return
-        # The preferences table is durable and the choice is scoped to one operator.
+        # Check API-linked sender data BEFORE switching; no shipments are created.
+        try:
+            sender_profiles.get(profile_id).get_sender_info()
+        except NovaPoshtaError as exc:
+            telegram_bot.reply_to(message, "⚠️ Профиль не активирован: " + str(exc)[:320])
+            return
         pipeline.set_sender_preference(message.chat.id, message.from_user.id, profile_id)
         telegram_bot.reply_to(
             message, f"✅ Отправитель для будущих заказов: {profiles[profile_id]} ({profile_id}).\n"
                      "Ранее пересланные и оформленные заказы не изменены."
         )
+
+    @telegram_bot.message_handler(commands=["sendercheck"])
+    def sendercheck_handler(message):
+        if not _is_allowed(message):
+            return
+        if not sender_profiles:
+            telegram_bot.reply_to(message, "Отправители ещё не настроены.")
+            return
+        primary = sender_profiles.primary_profile
+        try:
+            sender_profiles.get(primary).get_sender_info()
+            telegram_bot.reply_to(
+                message, f"✅ Основной отправитель: {primary}. "
+                         "Контрагент, контакт, отделение и телефон определены. "
+                         "ТТН не создавалась."
+            )
+        except NovaPoshtaError as exc:
+            telegram_bot.reply_to(
+                message, f"⚠️ Основной отправитель {primary}: " + str(exc)[:320]
+                + "\nТТН не создавалась."
+            )
 
     @telegram_bot.message_handler(commands=["track"])
     def track_handler(message):
@@ -778,7 +809,10 @@ def register_command_handlers(telegram_bot):
             telegram_bot.reply_to(message, "Проверка ТТН пока недоступна.")
             return
         try:
-            row = np_client.get_ttn_status(number, phone=((order or {}).get("order") or {}).get("phone", ""))
+            profile = ((order or {}).get("sender_profile")
+                       or (sender_profiles.primary_profile if sender_profiles else "default"))
+            client = sender_profiles.get(profile) if sender_profiles else np_client
+            row = client.get_ttn_status(number, phone=((order or {}).get("order") or {}).get("phone", ""))
         except NovaPoshtaError:
             telegram_bot.reply_to(message, "Не удалось получить статус из Новой почты. Повтори /track позже.")
             return
@@ -851,7 +885,9 @@ def register_command_handlers(telegram_bot):
                 telegram_bot.send_message(text="Статус ТТН пока недоступен.", **reply)
                 return
             try:
-                row = np_client.get_ttn_status(ttn, phone=order.get("phone", ""))
+                profile = job.get("sender_profile", "default")
+                client = sender_profiles.get(profile) if sender_profiles else np_client
+                row = client.get_ttn_status(ttn, phone=order.get("phone", ""))
                 status = row.get("Status") or "Статус пока не указан"
                 text = f"🚚 ТТН: {ttn}\nСтатус: {status}"
                 code = str(row.get("StatusCode"))
@@ -911,6 +947,7 @@ def get_pipeline():
                 os.getenv("STATE_DB_PATH", ".state/orders.sqlite3"), parse_order, np_client, bot,
                 database_url=database_url or None,
                 sender_clients=sender_profiles.clients if sender_profiles else None,
+                default_sender_profile=sender_profiles.primary_profile if sender_profiles else "default",
             )
         return _pipeline
 
@@ -971,27 +1008,29 @@ def ready():
         except Exception as exc:
             errors["telegram"] = type(exc).__name__
 
-    if np_client:
+    primary_client = (sender_profiles.get(sender_profiles.primary_profile)
+                      if sender_profiles else np_client)
+    if primary_client:
         try:
-            nova_poshta_ok = bool(np_client.ping())
+            nova_poshta_ok = bool(primary_client.ping())
         except Exception as exc:
             errors["nova_poshta"] = type(exc).__name__
 
         if nova_poshta_ok:
             try:
-                np_client.get_sender_info()
+                primary_client.get_sender_info()
                 sender_ok = True
             except Exception as exc:
                 errors["sender"] = type(exc).__name__
                 try:
-                    senders = np_client._call(
+                    senders = primary_client._call(
                         "Counterparty",
                         "getCounterparties",
                         {"CounterpartyProperty": "Sender", "Page": "1"},
                     )
                     if len(senders) == 1 and senders[0].get("Ref"):
                         sender_ref = senders[0]["Ref"]
-                        addresses = np_client._call(
+                        addresses = primary_client._call(
                             "Counterparty",
                             "getCounterpartyAddresses",
                             {
