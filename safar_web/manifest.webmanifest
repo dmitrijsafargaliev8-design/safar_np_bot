@@ -1,0 +1,18 @@
+{
+  "name": "SAFAR — Shipping Operations OS",
+  "short_name": "SAFAR",
+  "description": "Преміальна система контролю замовлень і ТТН",
+  "start_url": "/safar",
+  "scope": "/safar",
+  "display": "standalone",
+  "background_color": "#090b0e",
+  "theme_color": "#090b0e",
+  "icons": [
+    {
+      "src": "/safar/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
