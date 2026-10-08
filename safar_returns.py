@@ -94,7 +94,8 @@ def create_case(pipe, chat_id, owner_id, order_key, reason):
             (chat_id, owner_id, order_key),
         ).fetchone()
         if row:
-            return _public(row), False
+            totals = _expense_totals(pipe, [row["id"]])
+            return _public_with_total(row, totals.get(row["id"], 0)), False
         job = pipe.order_for_key(chat_id, owner_id, order_key)
         if not job or job.get("state") != "created":
             raise ValueError("Issued live TTN required for return case")
@@ -140,7 +141,7 @@ def get_case(pipe, chat_id, owner_id, case_id):
             "WHERE case_id=? ORDER BY at,id",
             (case_id,),
         ).fetchall()
-    totals = _expense_totals(pipe, [case_id])
+        totals = _expense_totals(pipe, [case_id])
     result = _public_with_total(row, totals.get(case_id, 0))
     result["events"] = [{"at": e["at"], "event_type": e["event_type"]}
                         for e in events]
@@ -220,7 +221,8 @@ def link_verified_easy_return(pipe, chat_id, owner_id, case_id, reverse_ttn):
         if row["reverse_ttn"]:
             if row["reverse_ttn"] != reverse_ttn:
                 raise ValueError("A different incoming TTN is already linked")
-            return _public(row), False
+            totals = _expense_totals(pipe, [case_id])
+            return _public_with_total(row, totals.get(case_id, 0)), False
         now = time.time()
         pipe.db.execute(
             "UPDATE return_cases SET reverse_ttn=?, updated=? WHERE id=?",
@@ -237,7 +239,8 @@ def link_verified_easy_return(pipe, chat_id, owner_id, case_id, reverse_ttn):
         updated = pipe.db.execute(
             "SELECT * FROM return_cases WHERE id=?", (case_id,)
         ).fetchone()
-        return _public(updated), True
+        totals = _expense_totals(pipe, [case_id])
+        return _public_with_total(updated, totals.get(case_id, 0)), True
 
 
 def confirm_warehouse_receipt(pipe, chat_id, owner_id, case_id, number, acknowledged):
@@ -263,7 +266,8 @@ def confirm_warehouse_receipt(pipe, chat_id, owner_id, case_id, number, acknowle
         if number not in {row["outbound_ttn"], row["reverse_ttn"]}:
             raise ValueError("The scanned/entered TTN does not belong to this case")
         if row["warehouse_state"] == "received":
-            return _public(row), False
+            totals = _expense_totals(pipe, [case_id])
+            return _public_with_total(row, totals.get(case_id, 0)), False
         if row["warehouse_state"] != "not_received":
             raise ValueError("Unsupported warehouse state; resolve manually")
         now = time.time()
@@ -282,7 +286,8 @@ def confirm_warehouse_receipt(pipe, chat_id, owner_id, case_id, number, acknowle
         updated = pipe.db.execute(
             "SELECT * FROM return_cases WHERE id=?", (case_id,)
         ).fetchone()
-        return _public(updated), True
+        totals = _expense_totals(pipe, [case_id])
+        return _public_with_total(updated, totals.get(case_id, 0)), True
 
 
 def record_return_expense(pipe, chat_id, owner_id, case_id, amount, category,
