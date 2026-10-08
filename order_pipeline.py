@@ -320,14 +320,18 @@ class OrderPipeline:
                     if original_order != order:
                         job["notice"] = "Этот исходный заказ уже обработан. Показаны данные ранее созданной ТТН."
                     job.update(state="created", result=previous_result, order=original_order, duplicate=True,
+                               sender_profile=receipt.get("sender_profile", "default"),
                                due=self.clock(), notified=False)
                     return
                 history = list(receipt.get("history") or [])
                 history.append({"result": previous_result, "order": original_order, "deleted_at": self.clock()})
                 receipt = {"result": previous_result, "order": order, "history": history}
             job["replaced_ttn"] = previous_result["ttn"]
-        shipment_client = self._sender_client(job.get("sender_profile", "default"))
-        receipt["sender_profile"] = job.get("sender_profile", "default")
+        try:
+            shipment_client = self._sender_client(job.get("sender_profile", "default"))
+        except NovaPoshtaError as exc:
+            job.update(state="failed", error=str(exc), due=self.clock(), notified=False)
+            return
         with self.lock, self.db:
             if row:
                 self._save_receipt(job, "creating", receipt)
@@ -347,7 +351,10 @@ class OrderPipeline:
             # Record success before sending Telegram: a failed send never creates
             # another shipment on retry.
             with self.lock, self.db:
-                self._save_receipt(job, "created", {**receipt, "result": result, "order": order})
+                self._save_receipt(job, "created", {
+                    **receipt, "result": result, "order": order,
+                    "sender_profile": job.get("sender_profile", "default"),
+                })
             job.update(state="created", result=result, due=self.clock(), notified=False)
             job.pop("pending_edits", None)
         except NovaPoshtaTemporaryError as exc:
