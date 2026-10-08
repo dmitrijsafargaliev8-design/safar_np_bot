@@ -133,6 +133,10 @@ class OrderPipeline:
         if "\x00" in text or any(ord(char) < 32 and char not in "\n\r\t" for char in text):
             raise ValueError("Invalid control character in source")
         key = f"{chat_id}:0:{owner_id}:app:{request_id}"
+        # Short-lived replay guard protects against accidental double-submits
+        # with a *new* browser request ID. Phone/name are NOT identity: a
+        # customer may legitimately place many separate orders.
+        source_fingerprint = hashlib.sha256(" ".join(text.split()).casefold().encode()).hexdigest()
         with self.lock, self.db:
             job = self._job(key)
             if job is not None:
@@ -140,15 +144,34 @@ class OrderPipeline:
                     raise OrderCorrectionConflict("Request ID was already used for different content")
                 return job, False
             now = self.clock()
+            sender_profile = self.sender_preference(chat_id, owner_id)
+            recent = self.db.execute(
+                "SELECT body FROM jobs WHERE chat_id=? AND owner_id=? AND updated>=? "
+                "AND " + self._order_value("source_fingerprint") + "=? "
+                "ORDER BY updated DESC LIMIT 20",
+                (chat_id, owner_id, now - 120, source_fingerprint),
+            ).fetchall()
+            for row in recent:
+                earlier = json.loads(row["body"])
+                # Deleted shipments need a separate reviewed reissue; never
+                # mistakenly claim the old deleted receipt as a new order.
+                if (earlier.get("source") == "app"
+                        and earlier.get("sender_profile") == sender_profile
+                        and earlier.get("state") not in {"deleted"}
+                        and 0 <= now - float(earlier.get("created_at") or 0) <= 120
+                        and " ".join((earlier.get("source_text") or "").split()).casefold()
+                            == " ".join(text.split()).casefold()):
+                    return earlier, False
             job = {
                 "key": key, "chat_id": chat_id, "owner_id": owner_id,
                 "source": "app", "source_text": text,
+                "source_fingerprint": source_fingerprint,
                 "thread_id": 0, "anchor_id": None,
                 "messages": [{"text": text, "date": now}],
                 "state": "collecting", "due": now, "created_at": now,
                 "attempts": 0, "notified": True, "result": None,
                 "order": None, "identity": None,
-                "sender_profile": self.sender_preference(chat_id, owner_id),
+                "sender_profile": sender_profile,
             }
             self._write(job)
             return job, True
