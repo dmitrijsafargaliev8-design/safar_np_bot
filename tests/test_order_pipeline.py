@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from bot import parse_order
-from np_client import NovaPoshtaTemporaryError, NovaPoshtaUncertainError
+from np_client import NovaPoshtaClient, NovaPoshtaTemporaryError, NovaPoshtaUncertainError
 from order_pipeline import OrderPipeline
 
 
@@ -67,6 +67,41 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("20400000000001", sent["caption"])
         self.assertIn("Без наложки", sent["caption"])
         self.assertEqual(sent["reply_to_message_id"], 1)
+
+    def test_forwarded_photo_with_oblast_before_city_creates_correct_shipment(self):
+        client = NovaPoshtaClient("fake-test-api-key")
+        client.get_sender_info = Mock(return_value={"city_ref": "sender-city", "sender_ref": "sender",
+            "address_ref": "sender-wh", "contact_ref": "sender-contact", "phone": "380500000002"})
+        client.get_or_create_recipient = Mock(return_value=("recipient", "recipient-contact", "380500000001"))
+        def api(model, method, properties):
+            if (model, method) == ("Address", "getCities"):
+                self.assertEqual(properties["FindByString"], "Васильков")
+                return [{"Ref": "vasylkiv-city", "Description": "Васильків", "DescriptionRu": "Васильков", "Area": "kyiv-area"}]
+            if (model, method) == ("Address", "getAreas"):
+                return [{"Ref": "kyiv-area", "Description": "Київська", "DescriptionRu": "Киевская"}]
+            if (model, method) == ("Address", "getWarehouses"):
+                self.assertEqual(properties["CityRef"], "vasylkiv-city")
+                return [{"Ref": "vasylkiv-wh4", "Number": "4", "Description": "Відділення №4"}]
+            if (model, method) == ("InternetDocument", "save"):
+                self.assertEqual(properties["CityRecipient"], "vasylkiv-city")
+                self.assertEqual(properties["RecipientAddress"], "vasylkiv-wh4")
+                self.assertNotIn("BackwardDeliveryData", properties)
+                return [{"IntDocNumber": "20400000000001"}]
+            self.fail("Unexpected API operation")
+        client._call = Mock(side_effect=api)
+        self.pipeline.client = client
+        incoming = message(1, caption="Киевская обл, Васильков, нп 4, Іваненко Марія, 0500000001, Оценка 1600")
+        incoming["forward_origin"] = {"type": "hidden_user", "sender_user_name": "Seller", "date": 1791300000}
+        self.pipeline.ingest(incoming, 1)
+        self.drain()
+        self.assertEqual(self.job()["state"], "created")
+        self.assertEqual(self.bot.send_photo.call_args.kwargs["photo"], "file-1")
+        repeat = copy.deepcopy(incoming)
+        repeat["message_id"] = 2
+        self.pipeline.ingest(repeat, 2)
+        self.drain()
+        saves = [call for call in client._call.call_args_list if call.args[:2] == ("InternetDocument", "save")]
+        self.assertEqual(len(saves), 1)
 
     def test_album_caption_on_second_photo_one_shipment_all_photos(self):
         self.pipeline.ingest(message(3, group="album"), 3)
