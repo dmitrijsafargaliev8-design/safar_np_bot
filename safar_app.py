@@ -24,7 +24,7 @@ from safar_auth import (
     require_same_origin, verify_telegram_init_data,
 )
 from safar_operations import sender_summary, select_sender, tracking
-from safar_returns import create_case, get_case, list_cases, carrier_snapshot, link_verified_easy_return
+from safar_returns import create_case, get_case, list_cases, carrier_snapshot, link_verified_easy_return, confirm_warehouse_receipt
 
 
 STATIC_ROOT = Path(__file__).resolve().parent / "safar_web"
@@ -458,6 +458,25 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
         if case is None:
             abort(404)
         return jsonify(case=case)
+
+    @bp.post("/api/safar/returns/<case_id>/warehouse-receipt")
+    def warehouse_receipt(case_id):
+        """Operator attestation only; never changes carrier or finance state."""
+        session = current_session()
+        require_same_origin(request)
+        require_csrf(request, session)
+        body = json_body()
+        chat = current_scope(session, body)
+        try:
+            case, changed = confirm_warehouse_receipt(
+                pipeline(), chat, session.user_id, case_id, body.get("ttn"),
+                body.get("physically_received"),
+            )
+        except (ValueError, TypeError):
+            abort(422)
+        if case is None:
+            abort(404)
+        return jsonify(case=case, changed=changed)
 
     @bp.post("/api/safar/returns/<case_id>/link-easy-return")
     def link_easy_return(case_id):
