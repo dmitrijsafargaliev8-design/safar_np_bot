@@ -528,6 +528,63 @@ class SafarAppTests(unittest.TestCase):
         self.assertEqual(len(self.get("/api/safar/returns").json["cases"]), 1)
         self.assertEqual(len(self.get("/api/safar/returns/" + case["id"]).json["case"]["events"]), 1)
 
+    def test_operator_warehouse_receipt_requires_physical_evidence_and_is_idempotent(self):
+        self.login()
+        created = self.post("/api/safar/returns", {"order_id": "job-alpha",
+                          "reason": "refused_by_recipient", "chat_id": USER})
+        self.assertEqual(created.status_code, 201)
+        case_id = created.json["case"]["id"]
+        route = f"/api/safar/returns/{case_id}/warehouse-receipt"
+        target = {"chat_id": USER, "ttn": SAMPLE["result"]["ttn"],
+                  "physically_received": True}
+        for invalid in [
+            {**target, "ttn": "20400000000099"},
+            {**target, "ttn": "invalid"},
+            {**target, "physically_received": False},
+            {**target, "physically_received": "true"},
+        ]:
+            self.assertEqual(self.post(route, invalid).status_code, 422)
+        self.assertEqual(self.post(route, target, csrf=False).status_code, 403)
+        self.assertEqual(self.post(route, target, origin="https://hostile.example").status_code, 403)
+        self.assertEqual(self.post(route, {**target, "chat_id": GROUP}).status_code, 404)
+        before = self.get("/api/safar/returns/" + case_id).json["case"]
+        self.assertEqual(before["warehouse_state"], "not_received")
+        self.assertEqual(before["finance_state"], "unreviewed")
+        receipt = self.post(route, target)
+        self.assertEqual(receipt.status_code, 200)
+        self.assertTrue(receipt.json["changed"])
+        self.assertEqual(receipt.json["case"]["warehouse_state"], "received")
+        self.assertEqual(receipt.json["case"]["finance_state"], "unreviewed")
+        again = self.post(route, target)
+        self.assertEqual(again.status_code, 200)
+        self.assertFalse(again.json["changed"])
+        final = self.get("/api/safar/returns/" + case_id).json["case"]
+        self.assertEqual(
+            [e["event_type"] for e in final["events"]],
+            ["case_opened", "warehouse_received"])
+        self.carrier.create_ttn.assert_not_called()
+        self.carrier.get_ttn_status.assert_not_called()
+
+    def test_warehouse_receipt_accepts_previously_verified_reverse_ttn(self):
+        self.login()
+        created = self.post("/api/safar/returns", {"order_id": "job-alpha",
+                            "reason": "easy_return_after_delivery", "chat_id": USER})
+        case_id = created.json["case"]["id"]
+        reverse = "20400000000123"
+        self.carrier.get_ttn_status.return_value = {
+            "Number": reverse, "StatusCode": "4",
+            "LightReturnNumber": SAMPLE["result"]["ttn"]}
+        link = self.post(f"/api/safar/returns/{case_id}/link-easy-return",
+                         {"chat_id": USER, "reverse_ttn": reverse})
+        self.assertEqual(link.status_code, 200)
+        confirmed = self.post(f"/api/safar/returns/{case_id}/warehouse-receipt",
+                              {"chat_id": USER, "ttn": reverse,
+                               "physically_received": True})
+        self.assertEqual(confirmed.status_code, 200)
+        self.assertEqual(confirmed.json["case"]["reverse_ttn"], reverse)
+        self.assertEqual(confirmed.json["case"]["warehouse_state"], "received")
+        self.assertEqual(confirmed.json["case"]["finance_state"], "unreviewed")
+
     def test_carrier_refusal_code_is_observation_not_automatic_return_request(self):
         self.login()
         self.carrier.get_ttn_status.return_value = {
