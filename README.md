@@ -1,5 +1,31 @@
 # SAFAR NP BOT
 
+## SAFAR APP v0.2 candidate — existing service, private journal
+
+The app continues the existing `/safar/` PWA. The v0.2 candidate adds database
+pagination/search, owner-scoped group selection, accurate journal analytics,
+private photo albums, read-only tracking, future sender preferences and safely
+staged order corrections. An app draft never creates or modifies a live TTN;
+review it, then use `/retry` on the existing Telegram card. The journal still
+requires confirmed deletion before replacing an issued shipment.
+
+Launch `/app` in your approved private Telegram chat for signed login. For a
+standalone Android browser, request a device code and send `/app CODE` to that
+same bot yourself. Verify that you requested the code before approving it.
+The code expires in five minutes; browser sessions expire after 30 minutes
+and logout revokes them. Browser access requires explicit allowlisted humans
+and chats even when the legacy bot strict flag is still being rolled out.
+
+Before an approved deployment, review the additive app authentication migration
+and [architecture, deployment and rollback notes](docs/SAFAR_APP_V02_RELEASE.md).
+No Render build changes are required. The existing Telegram webhook and shipment
+history remain in place. `?demo=1` contains synthetic client data only.
+
+Local checks: `python -m unittest discover -s tests -v`, then `npm ci` and
+`npm run test:ui`. Browser checks start their own local mock-only service and
+never call production or create carrier shipments. CI also runs the private
+PostgreSQL journal against a disposable PostgreSQL 17 database.
+
 ## FOP as primary sender — deployment without publishing secrets
 
 **Goal:** new Telegram forwards ship under the FOP's own Nova Poshta cabinet,
