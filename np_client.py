@@ -606,7 +606,13 @@ class NovaPoshtaClient:
         if cod_amount < 0:
             raise NovaPoshtaError("Сумма наложенного платежа не может быть отрицательной.")
 
-        address_delivery = bool((street or "").strip() and (house or "").strip())
+        # Отделение имеет приоритет: присланная улица может описывать
+        # местоположение отделения, а не адресную доставку получателю.
+        address_delivery = bool(
+            not (warehouse or "").strip()
+            and (street or "").strip()
+            and (house or "").strip()
+        )
 
         props = {
             "PayerType": payer_type,
