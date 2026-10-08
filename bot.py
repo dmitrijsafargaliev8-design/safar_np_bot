@@ -1104,7 +1104,21 @@ def webhook():
         else:
             pipeline.remember_update(update_id)
         return jsonify(ok=True)
-    except (KeyError, TypeError, ValueError):
+    except ValueError as exc:
+        # A signed, authorized correction with an invalid field should receive
+        # actionable feedback rather than disappearing as a Telegram 400.
+        if isinstance(message, dict) and _access_permits(
+            (message.get("chat") or {}).get("id"), (message.get("from") or {}).get("id")
+        ):
+            try:
+                bot.send_message(chat_id, "⚠️ Исправление не принято: " + str(exc)[:350])
+                pipeline.remember_update(update_id)
+                return jsonify(ok=True, validation_error=True)
+            except Exception:
+                logger.exception("Could not acknowledge invalid correction")
+                return jsonify(error="temporary message failure"), 503
+        return jsonify(error="invalid message"), 400
+    except (KeyError, TypeError):
         logger.warning("Malformed Telegram update id=%s", update_id)
         return jsonify(error="invalid message"), 400
     except Exception:
