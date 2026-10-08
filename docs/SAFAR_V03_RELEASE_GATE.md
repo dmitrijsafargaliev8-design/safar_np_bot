@@ -1,3 +1,13 @@
+## Verified production environment (2026-10-09, read-only checks + additive DB migrations)
+
+- Live Render `safar_np_bot` is deployed from `main` at `ff29d4758724caaf0981e4fd7ae5371e450fc6e7` (v0.2). Its `/health`, `/ready`, and unauthenticated `/safar/` returned normally after a Render free-tier wake-up. Current live NP/Telegram/sender/DB checks returned ready.
+- Correct production database is the **Supabase project SAFAR NP BOT** (not Render `life-lens-db`).
+- Before schema changes, created an **internal restricted consistent copy of all eight existing tables**: `safar_release_backup_20261009_before_v03`. After copy, row counts matched the live original tables. This is **not an independent off-site, restorable database backup**, so independent backup remains a release condition.
+- Successfully applied migration `safar_v03_private_return_cases` from `202610080005_return_cases.sql` and `safar_v03_private_tracking_events` from `202610080006_tracking_events.sql` to the real Supabase SAFAR project. Original rows remain 11 jobs, 28 messages, 5 receipts, 20 updates. New return/tracking tables initialized empty.
+- Verified all four new tables have RLS on; direct SELECT denied to `anon` and `authenticated`; scoped `safar_bot` role can SELECT/INSERT. Do not reapply production migrations unnecessarily.
+- Historic v0.2 photo GET returned 502 once on 2026-10-08; narrow independent hotfix PR #25 adds privacy-safe stage-only diagnostics. Cause remains unknown without a fresh authorized failing photo request. Do not claim resolved simply because health/ready is green.
+- PR #24 still DRAFT/unmerged/unreleased and all additional carrier-mutating flags remain disabled by default.
+
 # SAFAR / CONTROL v0.3 — Production Gate & Recovery
 Last updated: 2026-10-08. This document describes **implementation**, not a completed rollout.
 
@@ -11,7 +21,7 @@ Last updated: 2026-10-08. This document describes **implementation**, not a comp
 ## Database rollout (mandatory DBA review)
 1. Back up the existing PostgreSQL `safar_orders` schema and verify restore procedures on a disposable database. Do not delete the existing Render service or reset credentials.
 2. Apply **`migrations/202610080005_return_cases.sql`** then **`migrations/202610080006_tracking_events.sql`** via a privileged migration account, never the `safar_bot` runtime role. Both are additive.
-3. Verify ownership, grants and RLS for `return_cases`, `return_events`, `tracking_snapshots`, `tracking_events`; the public/`anon`/`authenticated` roles must have zero access to private tables. Only `safar_bot` should read/write its necessary data.
+3. Re-verify ownership, grants and RLS for `return_cases`, `return_events`, `tracking_snapshots`, `tracking_events`; the public/`anon`/`authenticated` roles must have zero access to private tables. Only `safar_bot` should read/write its necessary data.
 4. Run all automated Python/SQLite/Postgres/JS/Chromium tests with a **disposable test DB**. Never use real shipment API keys in CI.
 5. Confirm existing jobs/receipts/sender profiles unchanged before and after migration.
 
@@ -36,7 +46,7 @@ The branch includes an **opt-in GitHub Actions schedule**, but it runs on the de
 - Automatic creation of carrier return requests is NOT implemented; do not auto-create reverse TTNs or silently cancel COD.
 
 ## Rollout sequence
-1. CI green for **exact final SHA** of PR #24, code review, privacy/security review.
+1. CI green for **exact final SHA** of PR #24, code review, privacy/security review. The current production code remains v0.2.
 2. Replay tests: concurrent sends, NP timeout uncertain state, duplicated text/reused request ID, same customer with a different order, historical sender change, official deletion/reissue.
 3. Privileged schema migration and backup on staging, then a controlled production migration only after authorization.
 4. Deploy existing Render service by normal, recoverable deployment path, with new feature gates still OFF.
