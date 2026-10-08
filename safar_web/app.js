@@ -6,7 +6,7 @@ const demo = new URLSearchParams(location.search).get('demo') === '1';
 let language = 'uk';
 try { language = localStorage.getItem('safar.locale') === 'ru' ? 'ru' : 'uk'; } catch (_) {}
 const words = {
- returns:['Повернення','Возвраты'], returnNew:['Зафіксувати повернення','Зафиксировать возврат'], returnReason:['Причина повернення','Причина возврата'], returnHelp:['Заявка створюється вручну. Це не скасування ТТН і не доказ доставки товару назад.','Запись создаётся оператором. Это не удаление ТТН и не доказательство фактического возврата.'], returnSaved:['Повернення додано до окремого журналу.','Возврат добавлен в отдельный журнал.'], returnEmpty:['Повернень у цьому чаті не зареєстровано.','В этом чате возвраты пока не зарегистрированы.'], returnWarehouse:['Склад: очікуємо підтвердження','Склад: ожидает подтверждения'], returnUnknown:['Стан перевізника не перевірений','Статус перевозчика не проверен'], intake:['Додати замовлення','Добавить заказ'], intakeTitle:['Розумний прийом замовлення','Умный приём заказа'], intakeHelp:['Встав текст замовлення. SAFAR сам розпізнає поля та перевірить їх перед створенням ТТН.','Вставьте текст заказа. SAFAR сам извлечёт поля и проверит их перед созданием ТТН.'], intakeSource:['Текст замовлення','Текст заказа'], intakeSubmit:['Передати в автоматичну обробку','Передать на автоматическую обработку'], intakeDisabled:['Автоматичний прийом замовлень ще не дозволено адміністратором.','Автоматический приём заказов ещё не разрешён администратором.'], intakeImagesLater:['Фото та скриншоти: підключення захищеного сховища ще не завершене.','Фото и скриншоты: защищённое хранилище ещё не подключено.'], intakeQueued:['Замовлення збережено й передано в чергу.','Заказ сохранён и передан в очередь.'], intakeExisting:['Замовлення вже отримане; повтор не створений.','Заказ уже получен; повтор не создан.'], intakeEmpty:['Встав текст одного замовлення.','Вставьте текст одного заказа.'], home:['Головна','Главная'], orders:['Замовлення','Заказы'], shipments:['ТТН','ТТН'], senders:['Відправники','Отправители'], settings:['Налаштування','Настройки'],
+ returns:['Повернення','Возвраты'], returnNew:['Зафіксувати повернення','Зафиксировать возврат'], returnReason:['Причина повернення','Причина возврата'], returnHelp:['Заявка створюється вручну. Це не скасування ТТН і не доказ доставки товару назад.','Запись создаётся оператором. Это не удаление ТТН и не доказательство фактического возврата.'], returnSaved:['Повернення додано до окремого журналу.','Возврат добавлен в отдельный журнал.'], returnEmpty:['Повернень у цьому чаті не зареєстровано.','В этом чате возвраты пока не зарегистрированы.'], returnWarehouse:['Склад: очікуємо підтвердження','Склад: ожидает подтверждения'], returnUnknown:['Стан перевізника не перевірений','Статус перевозчика не проверен'], intake:['Додати замовлення','Добавить заказ'], intakeTitle:['Розумний прийом замовлення','Умный приём заказа'], intakeHelp:['Встав текст замовлення. SAFAR сам розпізнає поля та перевірить їх перед створенням ТТН.','Вставьте текст заказа. SAFAR сам извлечёт поля и проверит их перед созданием ТТН.'], intakeSource:['Текст замовлення','Текст заказа'], intakeSubmit:['Передати в автоматичну обробку','Передать на автоматическую обработку'], intakeDisabled:['Автоматичний прийом замовлень ще не дозволено адміністратором.','Автоматический приём заказов ещё не разрешён администратором.'], intakeImagesLater:['Фото та скриншоти: підключення захищеного сховища ще не завершене.','Фото и скриншоты: защищённое хранилище ещё не подключено.'], intakeQueued:['Замовлення збережено й передано в чергу.','Заказ сохранён и передан в очередь.'], intakeExisting:['Замовлення вже отримане; повтор не створений.','Заказ уже получен; повтор не создан.'], intakeEmpty:['Встав текст одного замовлення.','Вставьте текст одного заказа.'], radar:['Оперативний контроль','Оперативный контроль'], radarDesc:['Перевірені статуси Нової пошти для останніх ТТН. Перевірка виконується лише коли застосунок відкритий.','Проверенные статусы Новой Почты для последних ТТН. Проверка выполняется только при открытом приложении.'], radarNoStatus:['Перевірка ще не завершена','Проверка ещё не завершена'], radarError:['Статус тимчасово недоступний','Статус временно недоступен'], radarRefresh:['Оновити статуси','Обновить статусы'], home:['Головна','Главная'], orders:['Замовлення','Заказы'], shipments:['ТТН','ТТН'], senders:['Відправники','Отправители'], settings:['Налаштування','Настройки'],
  control:['Контроль відправок','Контроль отправок'], overviewDesc:['Замовлення, фото й накладні — з вашого Telegram-журналу.','Заказы, фото и накладные — из вашего Telegram-журнала.'],
  all:['Усі','Все'], fresh:['Нові','Новые'], processing:['В обробці','В обработке'], created:['ТТН створено','ТТН создана'], invalid:['Потрібна перевірка','Нужна проверка'], failed:['Помилка','Ошибка'], uncertain:['Перевірити у НП','Проверить в НП'], deleted:['Видалено','Удалено'],
  attention:['Потребують уваги','Требуют внимания'], total:['Всього замовлень','Всего заказов'], journal:['У вашому журналі','В вашем журнале'], issued:['Оформлені документи','Оформленные документы'], unresolved:['Помилки та перевірки','Ошибки и проверки'], queued:['Очікують завершення','Ожидают завершения'],
@@ -64,7 +64,7 @@ const badge = status => `<span class="state state-${['collecting','processing','
 const tabs = [['home','home','home'],['orders','orders','orders'],['shipments','shipments','truck'],['returns','returns','refresh'],['senders','senders','users'],['settings','settings','settings']];
 const view = {tab:'home',returnTab:'orders',filter:'all',search:'',sender:'',period:'all',sort:'updated_desc',chatId:null,scopes:[],selected:null,orders:[],counts:{},pagination:{},authed:false,loading:true,listLoading:false,moreLoading:false,error:'',detailLoading:false,detailError:'',detailCache:{},tracking:{},trackingLoading:false,trackingError:'',senders:null,sendersLoading:false,sendersError:'',analytics:null,analyticsLoading:false,analyticsError:'',csrf:'',expiresAt:null,lastSync:null,offline:!navigator.onLine || document.body.dataset.offlineShell === 'true',editing:false,editDraft:null,editError:'',saving:false,pair:null,pairBusy:false,pairError:'',photoErrors:new Set(),photoAttempts:{},photo:null,installPrompt:null,scopeLoading:false};
 view.returnCases = []; view.returnTracking = {}; view.returnTrackingBusy = {}; view.returnTrackingErrors = {}; view.returnsLoading = false; view.returnsError = '';
-view.autoIntakeEnabled = false;
+view.autoIntakeEnabled = false; view.radarLoading = false; view.radarErrors = {};
 let requestSequence = 0, sessionEpoch = 0, expiryTimer = null, listController = null, searchTimer = null, pairingTimer = null, pairSequence = 0;
 let sessionChannel;
 try { sessionChannel = new BroadcastChannel('safar-session'); sessionChannel.onmessage = e => { if (e.data === 'logout') clearSession(); }; } catch (_) {}
@@ -143,10 +143,15 @@ function filters() {
  const profiles = view.senders?.profiles || [];
  return `<div class="toolbar"><label class="search">${icon('search')}<input id="orderSearch" type="search" autocomplete="off" maxlength="120" aria-label="${esc(t('searchLabel'))}" placeholder="${esc(t('search'))}" value="${esc(view.search)}"></label>${button('refresh',t('refresh'),'refresh',view.listLoading || view.offline,'button-quiet toolbar-refresh',`aria-label="${esc(t('refresh'))}"`)}</div><div class="chip-list">${[['all',`${t('all')} · ${c.all}`],['collecting',`${t('fresh')} · ${c.new}`],['processing',t('processing')],['created',`${t('created')} · ${c.created}`],['attention',`${t('attention')} · ${c.attention}`]].map(([value,label]) => `<button type="button" class="filter-chip ${view.filter === value ? 'active' : ''}" aria-pressed="${view.filter === value}" data-filter="${value}">${esc(label)}</button>`).join('')}</div><div class="filter-controls"><label>${esc(t('period'))}<select id="dateFilter">${[['all','anyTime'],['today','today'],['7','week'],['30','month']].map(([v,k]) => `<option value="${v}" ${view.period === v ? 'selected' : ''}>${esc(t(k))}</option>`).join('')}</select></label><label>${esc(t('senderFilter'))}<select id="senderFilter"><option value="">${esc(t('allSenders'))}</option>${profiles.map(p => `<option value="${esc(p.id)}" ${view.sender === p.id ? 'selected' : ''}>${esc(p.label || p.id)}</option>`).join('')}</select></label><label>${esc(t('sort'))}<select id="sortFilter"><option value="updated_desc" ${view.sort === 'updated_desc' ? 'selected' : ''}>${esc(t('newest'))}</option><option value="updated_asc" ${view.sort === 'updated_asc' ? 'selected' : ''}>${esc(t('oldest'))}</option></select></label></div>`;
 }
+function shipmentRadar() {
+ const issued=view.orders.filter(o=>o.ttn && /^\d{14}$/.test(o.ttn)).slice(0,3);
+ if (!issued.length) return "";
+ return `<div class="panel radar-panel"><div class="panel-header"><div><div class="eyebrow">SAFAR / CARRIER RADAR</div><h3>${esc(t("radar"))}</h3></div>${button("radar-refresh",t(view.radarLoading?"trackingLoading":"radarRefresh"),"refresh",view.radarLoading || view.offline)}</div><p class="muted-text">${esc(t("radarDesc"))}</p><div class="radar-list">${issued.map(o=>{const tdata=view.tracking[o.id];const verified=tdata?.tracking || tdata; const message=demo ? t("demoNotice") : verified?.status || verified?.status_text || t(view.radarErrors[o.id]?"radarError":"radarNoStatus");return `<button type="button" class="radar-row" data-order="${esc(o.id)}"><span class="radar-dot ${verified?.phase==="delivered"?"radar-complete":""}"></span><span class="radar-name"><strong>${esc(o.recipient)}</strong><small class="selectable">${esc(o.ttn)}</small></span><span class="radar-status"><strong>${esc(message)}</strong><small>${verified?.checked_at ? esc(dateStr(verified.checked_at)) : "—"}</small></span></button>`;}).join("")}</div></div>`;
+}
 function orderList(shipment=false) {
  const page = view.pagination, total = Number(page.total);
  const count = Number.isFinite(total) ? total : view.orders.length;
- return `<div class="screen">${title(shipment ? 'LOGISTICS / SHIPMENTS' : 'WORKSPACE / ORDER MANAGEMENT',t(shipment ? 'shipments' : 'orders'),t(shipment ? 'shipmentDesc' : 'inboxDesc'))}${filters()}${view.error ? errorPanel(view.error) : ''}<div class="panel"><div class="panel-header"><h3>${esc(t(shipment ? 'documents' : 'registry'))}</h3><span class="panel-small">${count} ${esc(t('records'))}</span>${button('open-intake',t('intake'),'orders',view.offline,'button-primary')}</div>${panelOrders(view.orders,Infinity,shipment)}${view.orders.length ? `<div class="pagination"><span>${esc(t('shown'))} ${view.orders.length} ${esc(t('of'))} ${count}</span>${page.has_more ? button('load-more',t(view.moreLoading ? 'loading' : 'loadMore'),'arrow',view.moreLoading || view.offline) : ''}</div>` : ''}</div></div>`;
+ return `<div class="screen">${title(shipment ? 'LOGISTICS / SHIPMENTS' : 'WORKSPACE / ORDER MANAGEMENT',t(shipment ? 'shipments' : 'orders'),t(shipment ? 'shipmentDesc' : 'inboxDesc'))}${filters()}${view.error ? errorPanel(view.error) : ''}${shipment ? shipmentRadar() : ''}<div class="panel"><div class="panel-header"><h3>${esc(t(shipment ? 'documents' : 'registry'))}</h3><span class="panel-small">${count} ${esc(t('records'))}</span>${button('open-intake',t('intake'),'orders',view.offline,'button-primary')}</div>${panelOrders(view.orders,Infinity,shipment)}${view.orders.length ? `<div class="pagination"><span>${esc(t('shown'))} ${view.orders.length} ${esc(t('of'))} ${count}</span>${page.has_more ? button('load-more',t(view.moreLoading ? 'loading' : 'loadMore'),'arrow',view.moreLoading || view.offline) : ''}</div>` : ''}</div></div>`;
 }
 const fieldDefs = [['full_name','recipient','text','recipient'],['phone','phone','tel','phone'],['city','city','text','city'],['warehouse','warehouse','text','warehouse'],['cost','declared','text','declared'],['cod_amount','cod','text','cod'],['weight','weight','text','weight'],['description','description','text','description']];
 function editPanel(order) {
@@ -220,7 +225,7 @@ function messageFor(status) { return t(status === 401 ? 'expired' : status === 4
 function clearSession(message='') {
  sessionEpoch++; pairSequence++; clearTimeout(pairingTimer); clearTimeout(searchTimer); clearTimeout(expiryTimer); view.saving = false;
  view.listLoading = false; view.moreLoading = false; view.detailLoading = false; view.trackingLoading = false; view.sendersLoading = false; view.analyticsLoading = false; view.error = ''; view.detailError = ''; view.trackingError = ''; view.sendersError = ''; view.analyticsError = '';
- view.authed = false; view.autoIntakeEnabled = false; view.returnCases = []; view.returnTracking = {}; view.returnTrackingErrors = {}; view.returnTrackingBusy = {}; view.returnsError = ''; view.csrf = ''; view.expiresAt = null; view.orders = []; view.counts = {}; view.detailCache = {}; view.tracking = {}; view.selected = null; view.editDraft = null; view.editing = false; view.senders = null; view.analytics = null; view.lastSync = null; view.scopes = []; view.chatId = null; view.loading = false; view.pair = null; view.pairBusy = false; view.pairError = message; closeDialog(); for (const dialog of document.querySelectorAll('dialog')) { dialog.replaceChildren(); dialog.correction = null; } view.photoErrors.clear(); view.photoAttempts = {}; listController?.abort(); requestSequence++; render();
+ view.authed = false; view.autoIntakeEnabled = false; view.returnCases = []; view.returnTracking = {}; view.returnTrackingErrors = {}; view.returnTrackingBusy = {}; view.returnsError = ''; view.csrf = ''; view.expiresAt = null; view.orders = []; view.counts = {}; view.detailCache = {}; view.tracking = {}; view.radarErrors = {}; view.radarLoading = false; view.selected = null; view.editDraft = null; view.editing = false; view.senders = null; view.analytics = null; view.lastSync = null; view.scopes = []; view.chatId = null; view.loading = false; view.pair = null; view.pairBusy = false; view.pairError = message; closeDialog(); for (const dialog of document.querySelectorAll('dialog')) { dialog.replaceChildren(); dialog.correction = null; } view.photoErrors.clear(); view.photoAttempts = {}; listController?.abort(); requestSequence++; render();
 }
 async function jsonRequest(url,options={}) {
  if (!navigator.onLine || view.offline) { const error = new Error(t('networkError')); error.status = 0; throw error; }
@@ -415,12 +420,29 @@ async function fetchTracking() {
  catch (error) { if (epoch === sessionEpoch && view.selected === id) view.trackingError = error.message; }
  finally { if (epoch === sessionEpoch) { view.trackingLoading = false; if (view.selected === id) render(); } }
 }
+async function fetchShipmentRadar() {
+ if (view.tab !== "shipments" || view.radarLoading || view.offline) return;
+ const epoch=sessionEpoch, chatId=view.chatId;
+ const orders=view.orders.filter(o=>o.ttn && /^\d{14}$/.test(o.ttn)).slice(0,3);
+ if(!orders.length) return;
+ view.radarLoading=true; render();
+ try {
+  await Promise.allSettled(orders.map(async o=>{
+   try {
+    if (demo) return;
+    const result=await jsonRequest(scopedURL("/api/safar/orders/" + encodeURIComponent(o.id) + "/tracking"));
+    if(epoch===sessionEpoch && chatId===view.chatId) { view.tracking[o.id]=result; delete view.radarErrors[o.id]; }
+   } catch(error) { if(epoch===sessionEpoch && chatId===view.chatId) view.radarErrors[o.id]=error.message; }
+  }));
+ } finally {if(epoch===sessionEpoch && chatId===view.chatId) {view.radarLoading=false; if(view.tab==="shipments" && !view.selected) render();}}
+}
 async function switchTab(tab) {
  if (!tabs.some(t => t[0] === tab)) return;
  const old = view.tab; view.tab = tab; view.selected = null; view.editing = false; view.editDraft = null; view.detailError = ''; closeDialog();
  if (old !== tab && ['home','orders','shipments'].includes(tab)) { view.filter = 'all'; view.search = ''; view.sender = ''; view.period = 'all'; view.sort = 'updated_desc'; view.orders = []; view.pagination = {}; }
  window.scrollTo({top:0,behavior:'instant'}); render({preserve:false}); document.querySelector('h1')?.focus({preventScroll:true});
  if (['home','orders','shipments'].includes(tab)) await fetchOrders();
+ if (tab === 'shipments') await fetchShipmentRadar();
  if (tab === 'home') await fetchAnalytics();
  if (tab === 'senders') await fetchSenders();
  if (tab === 'returns') await fetchReturns();
@@ -442,7 +464,7 @@ async function fetchReturnTracking(id) {
  } catch(error) { if(epoch===sessionEpoch) view.returnTrackingErrors[id]=error.message; }
  finally { if(epoch===sessionEpoch) { delete view.returnTrackingBusy[id]; render(); } }
 }
-async function refreshCurrent() { if (view.selected) return fetchDetail(view.selected); if (view.tab === 'senders') return fetchSenders(); if (view.tab === 'returns') return fetchReturns(); const tasks = [fetchOrders()]; if (view.tab === 'home') tasks.push(fetchAnalytics()); await Promise.allSettled(tasks); }
+async function refreshCurrent() { if (view.selected) return fetchDetail(view.selected); if (view.tab === 'senders') return fetchSenders(); if (view.tab === 'returns') return fetchReturns(); if (view.tab === 'shipments') {await fetchOrders(); return fetchShipmentRadar();} const tasks = [fetchOrders()]; if (view.tab === 'home') tasks.push(fetchAnalytics()); await Promise.allSettled(tasks); }
 async function logout() {
  try { await jsonRequest('/api/safar/logout',{method:'POST',body:'{}'}); sessionChannel?.postMessage('logout'); clearSession(); toast(t('loggedOut')); }
  catch (error) { toast(error.message); }
@@ -470,6 +492,7 @@ document.addEventListener('click',async event => {
  if (action === 'refresh') return refreshCurrent();
  if (action === 'refresh-analytics') return fetchAnalytics();
  if (action === 'refresh-senders') return fetchSenders();
+ if (action === 'radar-refresh') return fetchShipmentRadar();
  if (action === 'refresh-returns') return fetchReturns();
  if (action === 'track-return') return fetchReturnTracking(control.dataset.caseId);
  if (action === 'open-return') return openReturnDialog();
@@ -508,7 +531,7 @@ document.addEventListener('change',async event => {
  if (event.target.id === 'senderFilter') view.sender = event.target.value;
  else if (event.target.id === 'dateFilter') view.period = event.target.value;
  else if (event.target.id === 'sortFilter') view.sort = event.target.value;
- else if (event.target.id === 'scopeFilter') { sessionEpoch++; view.chatId = Number(event.target.value); view.orders = []; view.detailCache = {}; view.tracking = {}; view.senders = null; view.analytics = null; view.returnCases = []; view.returnTracking = {}; view.returnTrackingErrors = {}; view.selected = null; view.lastSync = null; await Promise.allSettled([fetchOrders(),fetchSenders(),fetchAnalytics()]); return; }
+ else if (event.target.id === 'scopeFilter') { sessionEpoch++; view.chatId = Number(event.target.value); view.orders = []; view.detailCache = {}; view.tracking = {}; view.radarErrors = {}; view.senders = null; view.analytics = null; view.returnCases = []; view.returnTracking = {}; view.returnTrackingErrors = {}; view.selected = null; view.lastSync = null; await Promise.allSettled([fetchOrders(),fetchSenders(),fetchAnalytics()]); return; }
  else return;
  view.orders = []; await fetchOrders();
 });
