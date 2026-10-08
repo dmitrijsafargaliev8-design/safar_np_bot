@@ -1,4 +1,4 @@
-name: SAFAR NP BOT parser tests
+name: SAFAR NP BOT order flow tests
 
 on:
   push:
@@ -17,6 +17,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Validate syntax
-        run: python -m compileall -q bot.py np_client.py tests
-      - name: Run order parser tests (no real TTNs)
+        run: python -m compileall -q bot.py np_client.py order_pipeline.py tests
+      - name: Run parser, photo, album and retry tests (no real TTNs)
         run: python -m unittest discover -s tests -v
+

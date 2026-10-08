@@ -2,13 +2,14 @@ import os
 import re
 import hmac
 import logging
-from collections import deque
+import math
+import threading
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 import telebot
 
-from np_client import NovaPoshtaClient, NovaPoshtaError
+from np_client import NovaPoshtaClient, NovaPoshtaError, normalize_phone
 
 load_dotenv()
 
@@ -56,23 +57,10 @@ if not NOVA_POSHTA_API_KEY:
     logger.error("NOVA_POSHTA_API_KEY/NP_API_KEY is missing")
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
+RELEASE_VERSION = "2026.10.08-orders-v2"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) if TELEGRAM_BOT_TOKEN else None
 np_client = NovaPoshtaClient(NOVA_POSHTA_API_KEY) if NOVA_POSHTA_API_KEY else None
-
-_processed_updates = set()
-_processed_order = deque(maxlen=2000)
-
-
-def _remember_update(update_id: int) -> bool:
-    if update_id in _processed_updates:
-        return False
-    if len(_processed_order) == _processed_order.maxlen:
-        oldest = _processed_order.popleft()
-        _processed_updates.discard(oldest)
-    _processed_updates.add(update_id)
-    _processed_order.append(update_id)
-    return True
-
 
 def _is_allowed(message) -> bool:
     if not ALLOWED_CHAT_IDS:
@@ -112,12 +100,14 @@ def _canonical_key(raw: str) -> str:
         "ціна": "cost",
         "объявленная стоимость": "cost",
         "оголошена вартість": "cost",
+        "оценка": "cost",
+        "оцінка": "cost",
         "наложка": "cod_amount",
         "наложенный платеж": "cod_amount",
         "накладений платіж": "cod_amount",
+        "післяплата": "cod_amount",
+        "наложенный платёж": "cod_amount",
         "cod": "cod_amount",
-        "сумма": "cod_amount",
-        "сума": "cod_amount",
         "плательщик": "payer_type",
         "платник": "payer_type",
         "оплата доставки": "payer_type",
@@ -126,6 +116,13 @@ def _canonical_key(raw: str) -> str:
         "email": "email",
         "e-mail": "email",
         "почта": "email",
+        "область": "area",
+        "район": "region",
+        "улица": "street",
+        "вулиця": "street",
+        "дом": "house",
+        "будинок": "house",
+        "квартира": "flat",
     }
     return aliases.get(key, key)
 
@@ -134,21 +131,22 @@ PHONE_RE = re.compile(
     r"(?<!\d)(?:\+?38[\s().-]*)?0[\s().-]*\d(?:[\s().-]*\d){8}(?!\d)"
 )
 WAREHOUSE_RE = re.compile(
-    r"(?i)\b(?:нп|нова\s*пошта|новая\s*почта|отд(?:еление)?|відд(?:ілення)?)"
+    r"(?i)\b(?:н\.?п\.?|нова\s*пошта|новая\s*почта|отд(?:еление)?|відд(?:ілення)?|почтомат|поштомат)"
     r"\s*(?:(?:№|#)\s*|(?:номер|ном\.?|number|no?\.?)\s*)?[:\-]?\s*(\d{1,5})\b"
 )
 COST_RE = re.compile(
     r"(?i)\b(?:оценка|оцінка|стоимость|вартість|объявленная\s+стоимость|оголошена\s+вартість)"
-    r"\b\s*[:\-]?\s*([\d\s.,]+)"
+    r"\b[ \t]*:?[ \t]*(-?[\d \t.,]+)"
 )
 COD_RE = re.compile(
-    r"(?i)\b(?:наложка|наложенный\s+платеж|накладений\s+платіж|післяплата|cod)"
-    r"\b\s*[:\-]?\s*([\d\s.,]+)"
+    r"(?i)\b(?:наложка|наложенный\s+плат[её]ж|накладений\s+платіж|післяплата|cod)"
+    r"\b[ \t]*:?[ \t]*(-?[\d \t.,]+)"
 )
 AREA_RE = re.compile(r"(?i)^(.+?)\s+(?:область|обл\.?)$")
 REGION_RE = re.compile(r"(?i)^(.+?)\s+(?:район|р-н\.?)$")
 SETTLEMENT_RE = re.compile(
-    r"(?i)^(м(?:істо)?|г(?:ород)?|с(?:ело)?|смт|пгт|селище|пос(?:елок)?)\.?\s*(.+)$"
+    r"(?i)^(м(?:істо)?|г(?:ород)?|с(?:ело)?|смт|пгт|селище|пос(?:елок)?)"
+    r"(?:\.\s*|\s+)(.+)$"
 )
 ADDRESS_RE = re.compile(
     r"(?i)^(?:вул(?:иця)?|улица|ул|просп(?:ект)?|проспект|пров(?:улок)?|переулок|"
@@ -166,7 +164,7 @@ HOUSE_RE = re.compile(
 
 def _clean_lines(text: str):
     return [
-        re.sub(r"\s+", " ", raw_line).strip()
+        re.sub(r"^[^\w+№#]+", "", re.sub(r"\s+", " ", raw_line)).strip()
         for raw_line in (text or "").splitlines()
         if raw_line.strip()
     ]
@@ -211,12 +209,15 @@ def _parse_street_line(line: str):
 
 
 def parse_order(text: str):
-    raw_text = (text or "").strip()
+    raw_text = (text or "").replace("\u00a0", " ").replace("\u200b", "").strip()
     if not raw_text:
         raise ValueError("В сообщении нет текста заказа.")
 
     data = {}
     lines = _clean_lines(raw_text)
+    phones = {normalize_phone(m.group(0)) for m in PHONE_RE.finditer(raw_text)}
+    if len(phones) > 1:
+        raise ValueError("В сообщении несколько телефонов. Перешли каждый заказ отдельно.")
 
     # Формат "Ключ: Значение" по-прежнему поддерживается.
     for line in lines:
@@ -225,7 +226,13 @@ def parse_order(text: str):
         key, value = line.split(":", 1)
         key = _canonical_key(key)
         value = value.strip()
-        if value:
+        if value and key in {
+            "full_name", "phone", "city", "warehouse", "weight", "cost", "cod_amount",
+            "payer_type", "payment_method", "description", "email", "area", "region",
+            "street", "house", "flat",
+        }:
+            if key in data and data[key] != value:
+                raise ValueError(f"В заказе разные значения поля «{key}». Уточни его ответом.")
             data[key] = value
 
     if not data.get("phone"):
@@ -374,7 +381,11 @@ def parse_order(text: str):
 
             # Имя получателя для НП обычно содержит минимум 2 словесные части.
             words = re.findall(r"[A-Za-zА-Яа-яІіЇїЄєҐґ'’\-]+", candidate)
-            if len(words) < 2:
+            if len(words) < 2 or len(words) > 4 or re.search(r"\d", candidate):
+                return ""
+            if not re.fullmatch(r"[A-Za-zА-Яа-яІіЇїЄєҐґ'’\-]+(?:\s+[A-Za-zА-Яа-яІіЇїЄєҐґ'’\-]+){1,3}", candidate):
+                return ""
+            if any(word.lower() in {"кроссовки", "кросівки", "обувь", "взуття", "одяг", "размер", "розмір", "оплачено", "сплачено", "наложка", "післяплата", "доставка", "товар", "артикул"} for word in words):
                 return ""
             return candidate
 
@@ -386,7 +397,11 @@ def parse_order(text: str):
 
             # Старый формат тоже оставляем: ФИО перед телефоном.
             if not data.get("full_name"):
-                same_line_prefix = _name_candidate(phone_line[:phone_match.start()])
+                prefix = phone_line[:phone_match.start()]
+                branch = WAREHOUSE_RE.search(prefix)
+                if branch:
+                    prefix = prefix[branch.end():]
+                same_line_prefix = _name_candidate(prefix)
                 if same_line_prefix:
                     data["full_name"] = same_line_prefix
 
@@ -432,12 +447,20 @@ def parse_order(text: str):
                     data["full_name"] = candidate
                     break
 
+    if data.get("street") and not data.get("house") and not data.get("warehouse"):
+        parts = _parse_street_line("ул. " + data["street"])
+        if parts:
+            data.update(parts)
+    if data.get("warehouse"):
+        data["street"] = data["house"] = data["flat"] = ""
+
     missing = [
         label
         for key, label in (
             ("full_name", "ФИО"),
             ("phone", "Телефон"),
             ("city", "Город/населённый пункт"),
+            ("cost", "Оценка/стоимость"),
         )
         if not data.get(key)
     ]
@@ -454,15 +477,32 @@ def parse_order(text: str):
         raw = data.get(name)
         if raw is None:
             return default
+        if name == "cod_amount" and re.fullmatch(r"(?i)(?:нет|немає|нема|без|без наложки|оплачено|сплачено)", str(raw).strip()):
+            return 0.0
         cleaned = re.sub(r"[^\d,.\-]", "", str(raw)).replace(",", ".")
+        if name in {"cost", "cod_amount"}:
+            compact = re.sub(r"[^\d,.-]", "", str(raw))
+            if re.fullmatch(r"\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?", compact):
+                groups = re.split(r"[.,]", compact)
+                cleaned = "".join(groups) if len(groups[-1]) == 3 else "".join(groups[:-1]) + "." + groups[-1]
         try:
-            return float(cleaned)
+            value = float(cleaned)
         except ValueError:
             raise ValueError(f"Поле {name} должно быть числом.")
+        if not math.isfinite(value) or value < 0 or (name != "cod_amount" and value == 0):
+            raise ValueError(f"Поле {name} должно содержать корректное положительное число.")
+        return value
 
     data["weight"] = num("weight", 1.0)
     data["cost"] = num("cost", 200.0)
     data["cod_amount"] = num("cod_amount", 0.0)
+    data["phone"] = normalize_phone(data["phone"])
+    no_cod = bool(re.search(r"(?i)\b(?:без\s+наложки|без\s+післяплати|без\s+накладеного\s+платежу)\b", raw_text))
+    if no_cod and data["cod_amount"] > 0:
+        raise ValueError("Одновременно указаны «без наложки» и сумма наложки. Уточни оплату.")
+    if re.search(r"(?i)\b(?:наложка|післяплата|наложенный\s+плат[её]ж)\b", raw_text) and not data.get("cod_amount"):
+        if not re.search(r"(?i)\b(?:без|нет|немає|нема|оплачено|сплачено|0)\b", raw_text):
+            raise ValueError("Указана наложка без суммы. Напиши сумму или «Без наложки».")
 
     data.setdefault("warehouse", "")
     data.setdefault("street", "")
@@ -483,16 +523,16 @@ HELP_TEXT = (
     "На отделение:\n"
     "Одесса\n"
     "НП 142\n"
-    "Погорельцева Наталья\n"
-    "+380 95 947 7703\n"
+    "Тестовий Отримувач\n"
+    "+380 50 000 00 01\n"
     "Оценка 1600\n\n"
     "Или адресная доставка:\n"
     "Одеська область\n"
     "Березівський район\n"
     "Село Петровірівка\n"
     "Вул. Шклярука 15\n"
-    "Желязкова Лариса\n"
-    "0972218934\n"
+    "Іваненко Марія\n"
+    "0500000002\n"
     "Оценка 1800"
 )
 
@@ -537,65 +577,64 @@ if bot:
             f"Sender: {sender_status}",
         )
 
-    def _process_order_message(message, order_text: str):
-        if not np_client:
-            bot.reply_to(message, "Ошибка конфигурации: NOVA_POSHTA_API_KEY не задан.")
-            return
-
-        try:
-            order = parse_order(order_text)
-            result = np_client.create_ttn(**order)
-            destination = (
-                f"{order['city']} · НП {order['warehouse']}"
-                if order.get("warehouse")
-                else f"{order['city']} · {order['street']} {order['house']}"
-            )
-            reply = (
-                f"✅ ТТН создана: {result['ttn']}\n"
-                f"{destination}\n"
-                f"{order['full_name']} · {order['phone']}\n"
-                f"Оценка: {order['cost']:g} грн"
-            )
-            if order.get("cod_amount", 0) > 0:
-                reply += f"\nНаложка: {order['cod_amount']:g} грн"
-            if result.get("estimated_delivery_date"):
-                reply += f"\nОриентировочная доставка: {result['estimated_delivery_date']}"
-            bot.reply_to(message, reply)
-        except (ValueError, NovaPoshtaError) as exc:
-            bot.reply_to(message, f"❌ {exc}\n\n{HELP_TEXT}")
-        except Exception:
-            logger.exception("Unhandled order error")
-            bot.reply_to(message, "❌ Внутренняя ошибка. Детали записаны в лог сервиса.")
-
-    @bot.message_handler(content_types=["text"])
-    def text_handler(message):
+    @bot.message_handler(commands=["orders"])
+    def orders_handler(message):
         if not _is_allowed(message):
             return
-        if (message.text or "").startswith("/"):
+        pipeline = get_pipeline()
+        if not pipeline:
+            bot.reply_to(message, "Сервис обработки заказов пока недоступен.")
             return
-        _process_order_message(message, message.text or "")
+        jobs = pipeline.list_orders(message.chat.id, message.from_user.id)
+        labels = {"collecting": "в очереди", "processing": "обрабатывается", "created": "готово",
+                  "invalid": "нужны данные", "failed": "ошибка", "uncertain": "проверить в НП"}
+        lines = []
+        for job in jobs:
+            order = job.get("order") or {}
+            result = job.get("result") or {}
+            lines.append(f"{result.get('ttn') or '—'} · {order.get('full_name') or 'Заказ'} · {labels[job['state']]}")
+        bot.reply_to(message, "Последние заказы:\n" + "\n".join(lines) if lines else "Заказов пока нет.")
 
-    @bot.message_handler(content_types=["photo", "video", "document", "animation"])
-    def media_handler(message):
-        if not _is_allowed(message):
-            return
+    @bot.message_handler(func=lambda message: bool((message.text or "").startswith("/")))
+    def unknown_command_handler(message):
+        if _is_allowed(message):
+            bot.reply_to(message, "Команды: /help, /status, /orders. Для повтора ответь на ошибку командой /retry.")
 
-        caption = (message.caption or "").strip()
-        if not caption:
-            # В медиагруппе подпись обычно есть только у одного элемента.
-            return
-        _process_order_message(message, caption)
+
+_pipeline = None
+_pipeline_lock = threading.Lock()
+
+
+def get_pipeline():
+    global _pipeline
+    if not bot or not np_client:
+        return None
+    with _pipeline_lock:
+        if _pipeline is None:
+            from order_pipeline import OrderPipeline
+            _pipeline = OrderPipeline(os.getenv("STATE_DB_PATH", ".state/orders.sqlite3"), parse_order, np_client, bot)
+        return _pipeline
+
+
+@app.before_request
+def start_order_processor():
+    # Start after the Gunicorn fork, never in its master process.
+    pipeline = get_pipeline()
+    if pipeline and os.getenv("SAFAR_DISABLE_BACKGROUND") != "1":
+        pipeline.start()
 
 
 @app.get("/")
 def root():
-    return jsonify(service="SAFAR NP BOT", status="ok")
+    return jsonify(service="SAFAR NP BOT", status="ok", version=RELEASE_VERSION)
 
 
 @app.get("/health")
 def health():
     return jsonify(
         status="ok",
+        version=RELEASE_VERSION,
+        order_processor_running=bool(_pipeline and _pipeline.thread and _pipeline.thread.is_alive()),
         telegram_configured=bool(TELEGRAM_BOT_TOKEN),
         nova_poshta_configured=bool(NOVA_POSHTA_API_KEY),
         webhook_secret_configured=bool(WEBHOOK_SECRET),
@@ -684,6 +723,8 @@ _one_time_ttn_result = None
 @app.get("/ops/create-one-time-ttn")
 def create_one_time_ttn():
     global _one_time_ttn_result
+    if os.getenv("ENABLE_ONE_TIME_TTN_OPS") != "1":
+        return jsonify(error="disabled"), 403
     secret = os.getenv("ONE_TIME_TTN_SECRET", "")
     supplied = request.args.get("secret", "")
     if not secret or not hmac.compare_digest(supplied, secret):
@@ -723,18 +764,56 @@ def webhook():
     if not hmac.compare_digest(received_secret, WEBHOOK_SECRET):
         return jsonify(error="forbidden"), 403
 
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or type(payload.get("update_id")) is not int:
+        return jsonify(error="invalid update"), 400
+    pipeline = get_pipeline()
+    if not pipeline:
+        return jsonify(error="order processor not configured"), 503
+    update_id = payload["update_id"]
     try:
-        payload = request.get_json(force=True, silent=False)
-        update = telebot.types.Update.de_json(payload)
-        if update is None:
-            return jsonify(error="invalid update"), 400
-        if not _remember_update(update.update_id):
+        if pipeline.has_update(update_id):
             return jsonify(ok=True, duplicate=True)
-        bot.process_new_updates([update])
+        message = payload.get("message") or payload.get("edited_message")
+        if not isinstance(message, dict):
+            pipeline.remember_update(update_id)
+            return jsonify(ok=True, ignored=True)
+        chat_id = (message.get("chat") or {}).get("id")
+        if ALLOWED_CHAT_IDS and chat_id not in ALLOWED_CHAT_IDS:
+            pipeline.remember_update(update_id)
+            return jsonify(ok=True, ignored=True)
+        if (message.get("from") or {}).get("is_bot"):
+            pipeline.remember_update(update_id)
+            return jsonify(ok=True, ignored=True)
+        text = message.get("text") or ""
+        command = text.split(None, 1)[0].split("@", 1)[0] if text.startswith("/") else ""
+        if command == "/retry":
+            if not message.get("reply_to_message"):
+                bot.send_message(chat_id, "Ответь командой /retry на сообщение с ошибкой заказа.")
+                pipeline.remember_update(update_id)
+            else:
+                try:
+                    pipeline.ingest(message, update_id, retry=True)
+                except ValueError:
+                    bot.send_message(chat_id, "Заказ для повтора не найден. Перешли исходный заказ с фото.")
+                    pipeline.remember_update(update_id)
+        elif command:
+            update = telebot.types.Update.de_json(payload)
+            bot.process_new_updates([update])
+            pipeline.remember_update(update_id)
+        elif any(message.get(k) for k in ("text", "photo", "video", "document", "animation")):
+            pipeline.ingest(message, update_id, edited="edited_message" in payload)
+        else:
+            pipeline.remember_update(update_id)
         return jsonify(ok=True)
+    except (KeyError, TypeError, ValueError):
+        logger.warning("Malformed Telegram update id=%s", update_id)
+        return jsonify(error="invalid message"), 400
     except Exception:
-        logger.exception("Webhook processing failed")
-        return jsonify(error="webhook processing failed"), 500
+        logger.exception("Webhook journal write failed")
+        # No success acknowledgement if the order could not be saved: Telegram
+        # will retry the same update.
+        return jsonify(error="webhook processing failed"), 503
 
 
 def ensure_webhook():
@@ -742,17 +821,15 @@ def ensure_webhook():
         return
     url = f"{PUBLIC_BASE_URL}/webhook"
     try:
-        current = bot.get_webhook_info()
-        if current.url != url:
-            bot.set_webhook(
-                url=url,
-                secret_token=WEBHOOK_SECRET,
-                drop_pending_updates=False,
-                allowed_updates=["message"],
-            )
-            logger.info("Telegram webhook set to %s", url)
-        else:
-            logger.info("Telegram webhook already configured")
+        bot.set_webhook(
+            url=url,
+            secret_token=WEBHOOK_SECRET,
+            drop_pending_updates=False,
+            max_connections=1,
+            allowed_updates=["message", "edited_message"],
+            timeout=15,
+        )
+        logger.info("Telegram webhook configured for orders and corrections")
     except Exception:
         logger.exception("Could not configure Telegram webhook automatically")
 
@@ -777,3 +854,4 @@ except Exception as exc:
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)
+

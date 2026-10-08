@@ -1,6 +1,7 @@
 import os
 import re
 import logging
+import math
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -12,6 +13,14 @@ logger = logging.getLogger(__name__)
 
 class NovaPoshtaError(Exception):
     pass
+
+
+class NovaPoshtaTemporaryError(NovaPoshtaError):
+    """A read or pre-shipment operation can safely be retried."""
+
+
+class NovaPoshtaUncertainError(NovaPoshtaError):
+    """Shipment save may have succeeded; never automatically repeat it."""
 
 
 def normalize_phone(value: str) -> str:
@@ -109,8 +118,17 @@ class NovaPoshtaClient:
             response.raise_for_status()
             body = response.json()
         except (RequestException, ValueError) as exc:
-            logger.exception("Nova Poshta request failed")
-            raise NovaPoshtaError(f"Ошибка связи с Nova Poshta API: {exc}") from exc
+            logger.warning("Nova Poshta transport failure: model=%s method=%s type=%s", model_name, called_method, type(exc).__name__)
+            if model_name == "InternetDocument" and called_method == "save":
+                raise NovaPoshtaUncertainError(
+                    "Новая Почта не подтвердила результат создания. Проверь накладные в её приложении; повторное создание заблокировано."
+                ) from exc
+            raise NovaPoshtaTemporaryError("Новая Почта временно не отвечает. Заказ сохранён.") from exc
+
+        if not isinstance(body, dict) or type(body.get("success")) is not bool or not isinstance(body.get("data", []), list):
+            if model_name == "InternetDocument" and called_method == "save":
+                raise NovaPoshtaUncertainError("Новая Почта вернула неполный ответ. Проверь созданные накладные.")
+            raise NovaPoshtaTemporaryError("Некорректный ответ Новой Почты.")
 
         if not body.get("success"):
             details = (
@@ -599,11 +617,11 @@ class NovaPoshtaClient:
             else "Cash"
         )
 
-        if weight <= 0:
+        if not math.isfinite(weight) or weight <= 0:
             raise NovaPoshtaError("Вес должен быть больше 0.")
-        if cost <= 0:
+        if not math.isfinite(cost) or cost <= 0:
             raise NovaPoshtaError("Объявленная стоимость должна быть больше 0.")
-        if cod_amount < 0:
+        if not math.isfinite(cod_amount) or cod_amount < 0:
             raise NovaPoshtaError("Сумма наложенного платежа не может быть отрицательной.")
 
         # Отделение имеет приоритет: присланная улица может описывать
@@ -686,13 +704,13 @@ class NovaPoshtaClient:
 
         rows = self._call("InternetDocument", "save", props)
         if not rows:
-            raise NovaPoshtaError("Nova Poshta не вернула созданную ТТН.")
+            raise NovaPoshtaUncertainError("Новая Почта не вернула номер накладной. Проверь созданные ТТН.")
 
         doc = rows[0]
         ttn = doc.get("IntDocNumber") or doc.get("IntDocNumberNew")
         doc_ref = doc.get("Ref")
         if not ttn:
-            raise NovaPoshtaError("ТТН создана, но номер не получен.")
+            raise NovaPoshtaUncertainError("ТТН создана, но номер не получен. Проверь накладные в Новой Почте.")
 
         return {
             "ttn": str(ttn),
@@ -700,3 +718,4 @@ class NovaPoshtaClient:
             "cost_on_site": doc.get("CostOnSite"),
             "estimated_delivery_date": doc.get("EstimatedDeliveryDate"),
         }
+
