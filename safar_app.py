@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import io
 import logging
+import hashlib
+import hmac
 import math
+import os
 import re
 from pathlib import Path
 from urllib.parse import quote
@@ -24,6 +27,9 @@ from safar_auth import (
     require_same_origin, verify_telegram_init_data,
 )
 from safar_operations import sender_summary, select_sender, tracking
+from safar_monitor import monitor_pass, order_timeline, ready as monitor_ready
+from safar_ocr import extract_text, OcrUnavailable
+from safar_returns import create_case, get_case, list_cases, carrier_snapshot, link_verified_easy_return, confirm_warehouse_receipt, record_return_expense, ReturnExpenseConflict
 
 
 STATIC_ROOT = Path(__file__).resolve().parent / "safar_web"
@@ -106,6 +112,7 @@ def public_order(job, *, include_detail=False):
         (stamp for stamp in dates if stamp), default=_number(job.get("updated_at"), 0))
     base = {
         "id": key,
+        "source": "app" if job.get("source") == "app" else "telegram",
         "state": job.get("state") if job.get("state") in STATES else "invalid",
         "created_at": created,
         "updated_at": _number(job.get("updated_at"), 0),
@@ -158,6 +165,7 @@ def public_order(job, *, include_detail=False):
             "notice": ("Зміни збережені як пропозиція. Чинна ТТН не змінена."
                        if proposal else ""),
             "history": [], "receipts": [],
+            "can_print": bool(os.getenv("SAFAR_NP_PDF_PRINT") == "1" and _ttn(outcome.get("ttn"))),
         })
     return base
 
@@ -341,7 +349,10 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
     def session_response(session):
         response = make_response(jsonify(ok=True, user_id=session.user_id,
                                          csrf_token=session.csrf_token, expires_at=session.expires_at,
-                                         chat_id=default_scope(session.user_id)))
+                                         chat_id=default_scope(session.user_id),
+                                         auto_intake_enabled=os.getenv('SAFAR_APP_AUTO_CREATE') == '1',
+                                         media_intake_enabled=os.getenv('SAFAR_APP_MEDIA_INTAKE') == '1' and os.getenv('SAFAR_APP_AUTO_CREATE') == '1',
+                                         ocr_enabled=os.getenv('SAFAR_OCR_ENABLED') == '1'))
         response.set_cookie(COOKIE_NAME, session.token, max_age=SESSION_AGE, secure=True,
                             httponly=True, samesite="Lax", path="/api/safar")
         return no_store(response)
@@ -378,7 +389,10 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
     def session_status():
         session = current_session()
         return jsonify(ok=True, user_id=session.user_id, csrf_token=session.csrf_token,
-                       expires_at=session.expires_at, chat_id=default_scope(session.user_id))
+                       expires_at=session.expires_at, chat_id=default_scope(session.user_id),
+                       auto_intake_enabled=os.getenv("SAFAR_APP_AUTO_CREATE") == "1",
+                       media_intake_enabled=os.getenv("SAFAR_APP_MEDIA_INTAKE") == "1" and os.getenv("SAFAR_APP_AUTO_CREATE") == "1",
+                       ocr_enabled=os.getenv("SAFAR_OCR_ENABLED") == "1")
 
     @bp.post("/api/safar/logout")
     def logout():
@@ -411,6 +425,253 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
     def list_scopes():
         session = current_session()
         return jsonify(scopes=scopes(session.user_id), selected_chat_id=default_scope(session.user_id))
+
+    @bp.post("/api/safar/orders/intake")
+    def intake_text():
+        """Use the existing durable carrier queue, never create a TTN in HTTP."""
+        session = current_session()
+        require_same_origin(request)
+        require_csrf(request, session)
+        body = json_body()
+        if os.getenv("SAFAR_APP_AUTO_CREATE") != "1":
+            abort(503)
+        chat = current_scope(session, body)
+        try:
+            job, is_new = pipeline().ingest_app_text(chat, session.user_id,
+                                                      body.get("text"), body.get("request_id"))
+        except OrderCorrectionConflict:
+            abort(409)
+        except (ValueError, TypeError):
+            abort(422)
+        return jsonify(order=public_order(job), queued=job["state"] == "collecting",
+                       accepted=is_new, source="app"), 202 if is_new else 200
+
+    @bp.post("/api/safar/orders/intake/photo")
+    def intake_with_photo():
+        """Send one image to the operator's PRIVATE bot chat, then journal it.
+
+        Telegram is already the existing media store for SAFAR forwarding. This
+        bridge must not expose the file ID or bot token to the browser.
+        """
+        session = current_session()
+        require_same_origin(request)
+        require_csrf(request, session)
+        if (os.getenv("SAFAR_APP_AUTO_CREATE") != "1"
+                or os.getenv("SAFAR_APP_MEDIA_INTAKE") != "1"):
+            abort(503)
+        if request.content_length is not None and request.content_length > 3 * 1024 * 1024:
+            abort(413)
+        if len(request.files) != 1 or "image" not in request.files:
+            abort(422)
+        upload = request.files["image"]
+        if upload.mimetype not in {"image/jpeg", "image/png"}:
+            abort(415)
+        data = upload.stream.read(2 * 1024 * 1024 + 1)
+        if not 16 <= len(data) <= 2 * 1024 * 1024:
+            abort(413)
+        kind = ("image/jpeg" if data.startswith(b"\xff\xd8\xff") else
+                "image/png" if data.startswith(b"\x89PNG\r\n\x1a\n") else "")
+        if kind != upload.mimetype:
+            abort(415)
+        text = request.form.get("text", "")
+        if not isinstance(text, str) or len(text) > 8000:
+            abort(422)
+        if not text.strip():
+            try:
+                text = extract_text(data, enabled=os.getenv("SAFAR_OCR_ENABLED") == "1")
+            except OcrUnavailable:
+                abort(422)
+        request_id = request.form.get("request_id", "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", request_id):
+            abort(422)
+        raw_scope = request.form.get("chat_id")
+        try:
+            body = {"chat_id": int(raw_scope)} if raw_scope is not None else {}
+        except (TypeError, ValueError):
+            abort(422)
+        chat = current_scope(session, body)
+        digest = hashlib.sha256(data).hexdigest()
+        pipe = pipeline()
+        key = f"{chat}:0:{session.user_id}:app:{request_id}"
+        with pipe.lock:
+            existing = pipe._job(key)
+            if existing is not None:
+                if (existing.get("source") != "app"
+                        or existing.get("source_text") != text
+                        or existing.get("app_image_sha256") != digest):
+                    abort(409)
+                return jsonify(order=public_order(existing), accepted=False), 200
+            file = io.BytesIO(data)
+            file.name = "safar-order.jpg" if kind == "image/jpeg" else "safar-order.png"
+            try:
+                # Explicitly PRIVATE chat with the owner; never send customer
+                # images to the source group or selected customer.
+                message = telegram_bot.send_photo(
+                    session.user_id, file, caption="SAFAR / PRIVATE ORDER IMAGE")
+                sizes = getattr(message, "photo", None)
+                if not isinstance(sizes, (list, tuple)) or not sizes:
+                    abort(502)
+                photos = []
+                for item in sizes:
+                    file_id = getattr(item, "file_id", None)
+                    unique_id = getattr(item, "file_unique_id", None)
+                    if isinstance(file_id, str) and isinstance(unique_id, str):
+                        photos.append({"file_id": file_id, "file_unique_id": unique_id,
+                                       "width": getattr(item, "width", 0),
+                                       "height": getattr(item, "height", 0)})
+                if not photos:
+                    abort(502)
+                photo = max(photos, key=lambda p: p["width"] * p["height"])
+                job, created = pipe.ingest_app_text(
+                    chat, session.user_id, text, request_id, photo=photo)
+                if created:
+                    # Journal access is serialized by the same pipeline lock.
+                    # Avoid nesting OrderJournal DB transaction context managers
+                    # (Postgres has a single explicit transaction owner).
+                    with pipe.db:
+                        job["app_image_sha256"] = digest
+                        pipe._write(job)
+                return jsonify(order=public_order(job), accepted=created,
+                               queued=job["state"] == "collecting"), 202 if created else 200
+            except OrderCorrectionConflict:
+                abort(409)
+            except (ValueError, TypeError):
+                abort(422)
+            except HTTPException:
+                raise
+            except Exception:
+                # Most often the operator has not started the private bot chat.
+                # No order or TTN is created if the photo bridge fails.
+                abort(502)
+
+    @bp.get("/api/safar/returns")
+    def return_cases():
+        session = current_session()
+        chat = current_scope(session)
+        return jsonify(cases=list_cases(pipeline(), chat, session.user_id), chat_id=chat)
+
+    @bp.post("/api/safar/returns")
+    def open_return_case():
+        session = current_session()
+        require_same_origin(request)
+        require_csrf(request, session)
+        body = json_body()
+        chat = current_scope(session, body)
+        try:
+            case, created = create_case(pipeline(), chat, session.user_id,
+                                        body.get("order_id"), body.get("reason"))
+        except (ValueError, TypeError):
+            abort(422)
+        return jsonify(case=case, created=created), 201 if created else 200
+
+    @bp.get("/api/safar/returns/<case_id>")
+    def return_case_detail(case_id):
+        session = current_session()
+        chat = current_scope(session)
+        case = get_case(pipeline(), chat, session.user_id, case_id)
+        if case is None:
+            abort(404)
+        return jsonify(case=case)
+
+    @bp.post("/api/safar/returns/<case_id>/expense")
+    def add_return_expense(case_id):
+        """Operator-reported UAH expense; not a bank or NP settlement."""
+        session = current_session()
+        require_same_origin(request)
+        require_csrf(request, session)
+        body = json_body()
+        chat = current_scope(session, body)
+        try:
+            case, changed = record_return_expense(
+                pipeline(), chat, session.user_id, case_id, body.get("amount"),
+                body.get("category"), body.get("reference"),
+                body.get("request_id"), body.get("acknowledged"),
+            )
+        except ReturnExpenseConflict:
+            abort(409)
+        except (ValueError, TypeError):
+            abort(422)
+        if case is None:
+            abort(404)
+        return jsonify(case=case, changed=changed)
+
+    @bp.post("/api/safar/returns/<case_id>/warehouse-receipt")
+    def warehouse_receipt(case_id):
+        """Operator attestation only; never changes carrier or finance state."""
+        session = current_session()
+        require_same_origin(request)
+        require_csrf(request, session)
+        body = json_body()
+        chat = current_scope(session, body)
+        try:
+            case, changed = confirm_warehouse_receipt(
+                pipeline(), chat, session.user_id, case_id, body.get("ttn"),
+                body.get("physically_received"),
+            )
+        except (ValueError, TypeError):
+            abort(422)
+        if case is None:
+            abort(404)
+        return jsonify(case=case, changed=changed)
+
+    @bp.post("/api/safar/returns/<case_id>/link-easy-return")
+    def link_easy_return(case_id):
+        """Evidence-only association: does not order a return or change cash."""
+        session = current_session()
+        require_same_origin(request)
+        require_csrf(request, session)
+        body = json_body()
+        chat = current_scope(session, body)
+        try:
+            case, linked = link_verified_easy_return(pipeline(), chat, session.user_id,
+                                                     case_id, body.get("reverse_ttn"))
+        except (ValueError, TypeError):
+            abort(422)
+        except NovaPoshtaError:
+            abort(502)
+        if case is None:
+            abort(404)
+        return jsonify(case=case, linked=linked)
+
+    @bp.get("/api/safar/returns/<case_id>/tracking")
+    def return_case_tracking(case_id):
+        """Read carrier truth for the immutable outbound TTN and sender."""
+        session = current_session()
+        chat = current_scope(session)
+        try:
+            snapshot = carrier_snapshot(pipeline(), chat, session.user_id, case_id)
+        except ValueError:
+            abort(409)
+        except NovaPoshtaError:
+            abort(502)
+        if snapshot is None:
+            abort(404)
+        return jsonify(tracking=snapshot)
+
+    @bp.post("/api/internal/safar/sync")
+    def trusted_carrier_sync():
+        """Optional cron trigger, denied unless configured and secret-authenticated."""
+        secret = os.getenv("SAFAR_SYNC_SECRET") or ""
+        if os.getenv("SAFAR_SYNC_ENABLED") != "1" or not 32 <= len(secret) <= 128:
+            abort(404)
+        submitted = request.headers.get("X-Safar-Sync-Token") or ""
+        if len(submitted) > 128 or not hmac.compare_digest(submitted, secret):
+            abort(403)
+        pipe = pipeline()
+        if not monitor_ready(pipe):
+            abort(503)
+        return no_store(jsonify(ok=True, monitoring=monitor_pass(pipe)))
+
+    @bp.get("/api/safar/orders/<path:key>/carrier-events")
+    def carrier_events(key):
+        """Event history is scoped to the same private job as the original order."""
+        session = current_session()
+        chat = current_scope(session)
+        job = safe_job(session, chat, key)
+        if not monitor_ready(pipeline()):
+            abort(503)
+        return no_store(jsonify(order_id=job["key"],
+                                timeline=order_timeline(pipeline(), chat, session.user_id, job["key"])))
 
     @bp.get("/api/safar/orders")
     def orders():
@@ -517,6 +778,32 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
         except (ValueError, TypeError, OverflowError):
             abort(400)
         return jsonify(analytics=result, chat_id=chat)
+
+    @bp.get("/api/safar/orders/<path:key>/pdf")
+    def issued_ttn_pdf(key):
+        session = current_session()
+        if os.getenv("SAFAR_NP_PDF_PRINT") != "1":
+            abort(404)
+        chat = current_scope(session)
+        job = safe_job(session, chat, key)
+        if job.get("state") != "created":
+            abort(404)
+        receipt = job.get("result") if isinstance(job.get("result"), dict) else {}
+        number = _ttn(receipt.get("ttn"))
+        if not number:
+            abort(404)
+        raw_ref = receipt.get("ref")
+        doc_ref = raw_ref if isinstance(raw_ref, str) and re.fullmatch(
+            r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", raw_ref) else ""
+        try:
+            carrier = pipeline()._sender_client(job.get("sender_profile") or "default")
+            content = carrier.fetch_ttn_pdf(number, doc_ref=doc_ref)
+        except NovaPoshtaError:
+            abort(502)
+        if not isinstance(content, bytes) or not content.startswith(b"%PDF-"):
+            abort(502)
+        return no_store(send_file(io.BytesIO(content), mimetype="application/pdf",
+                                  as_attachment=True, download_name=f"SAFAR-TTN-{number}.pdf"))
 
     @bp.get("/api/safar/orders/<path:key>/photo/<int:index>")
     def photo(key, index):

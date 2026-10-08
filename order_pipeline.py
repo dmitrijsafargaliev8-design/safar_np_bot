@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 import threading
 import time
 from datetime import datetime, time as day_time, timedelta
@@ -115,6 +116,76 @@ class OrderPipeline:
                 "DO UPDATE SET profile_id=excluded.profile_id,updated=excluded.updated",
                 (chat_id, owner_id, profile_id, self.clock()),
             )
+
+    def ingest_app_text(self, chat_id, owner_id, text, request_id, *, photo=None):
+        """Durably intake one app-supplied source, without forged Telegram updates.
+
+        The client-generated request ID is stable across network retries. A
+        distinct intentional order requires a distinct request ID. Workers
+        perform validation and carrier issuance under the existing receipt lock.
+        """
+        if type(chat_id) is not int or type(owner_id) is not int or owner_id <= 0:
+            raise ValueError("Invalid app actor")
+        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", request_id):
+            raise ValueError("Invalid idempotency key")
+        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 8000:
+            raise ValueError("Order source text must be 1-8000 characters")
+        if "\x00" in text or any(ord(char) < 32 and char not in "\n\r\t" for char in text):
+            raise ValueError("Invalid control character in source")
+        if photo is not None:
+            if not isinstance(photo, dict) or any(not isinstance(photo.get(k), str) or not photo[k]
+                                                  for k in ("file_id", "file_unique_id")):
+                raise ValueError("Invalid trusted media reference")
+            if len(photo["file_id"]) > 512 or len(photo["file_unique_id"]) > 512:
+                raise ValueError("Invalid media reference length")
+        media_identity = photo["file_unique_id"] if photo else ""
+
+        key = f"{chat_id}:0:{owner_id}:app:{request_id}"
+        # Short-lived replay guard protects against accidental double-submits
+        # with a *new* browser request ID. Phone/name are NOT identity: a
+        # customer may legitimately place many separate orders.
+        source_fingerprint = hashlib.sha256(_json([" ".join(text.split()).casefold(),media_identity]).encode()).hexdigest()
+        with self.lock, self.db:
+            job = self._job(key)
+            if job is not None:
+                if (job.get("source") != "app" or job.get("source_text") != text
+                        or (job.get("app_media_unique_id") or "") != media_identity):
+                    raise OrderCorrectionConflict("Request ID was already used for different content")
+                return job, False
+            now = self.clock()
+            sender_profile = self.sender_preference(chat_id, owner_id)
+            recent = self.db.execute(
+                "SELECT body FROM jobs WHERE chat_id=? AND owner_id=? AND updated>=? "
+                "AND " + self._order_value("source_fingerprint") + "=? "
+                "ORDER BY updated DESC LIMIT 20",
+                (chat_id, owner_id, now - 120, source_fingerprint),
+            ).fetchall()
+            for row in recent:
+                earlier = json.loads(row["body"])
+                # Deleted shipments need a separate reviewed reissue; never
+                # mistakenly claim the old deleted receipt as a new order.
+                if (earlier.get("source") == "app"
+                        and earlier.get("sender_profile") == sender_profile
+                        and (earlier.get("app_media_unique_id") or "") == media_identity
+                        and earlier.get("state") not in {"deleted"}
+                        and 0 <= now - float(earlier.get("created_at") or 0) <= 120
+                        and " ".join((earlier.get("source_text") or "").split()).casefold()
+                            == " ".join(text.split()).casefold()):
+                    return earlier, False
+            job = {
+                "key": key, "chat_id": chat_id, "owner_id": owner_id,
+                "source": "app", "source_text": text,
+                "app_media_unique_id": media_identity,
+                "source_fingerprint": source_fingerprint,
+                "thread_id": 0, "anchor_id": None,
+                "messages": [{"text": text, "date": now, **({"photo": [photo]} if photo else {})}],
+                "state": "collecting", "due": now, "created_at": now,
+                "attempts": 0, "notified": True, "result": None,
+                "order": None, "identity": None,
+                "sender_profile": sender_profile,
+            }
+            self._write(job)
+            return job, True
 
     def ingest(self, message, update_id, *, edited=False, retry=False):
         """One transaction saves the entire message before acknowledging Telegram."""
@@ -256,6 +327,11 @@ class OrderPipeline:
         return result
 
     def _identity(self, job, order):
+        if job.get("source") == "app":
+            # No Telegram message identity exists for a web submission.
+            # A unique scoped source/request ID is immutable across retries.
+            return hashlib.sha256(_json(["app", job["chat_id"], job["owner_id"],
+                                         job["key"]]).encode()).hexdigest()
         origins = []
         for msg in job["messages"]:
             if not (msg.get("text") or msg.get("caption")):
@@ -545,11 +621,16 @@ class OrderPipeline:
             self._process(job)
         self._commit_result(job)
         if job["state"] != "collecting":
-            try:
-                self._notify(job)
-            except Exception as exc:
-                logger.warning("Telegram order notification failed: %s", type(exc).__name__)
-                job["due"] = self.clock() + 15
+            if job.get("source") == "app":
+                # App-origin jobs are read from the journal, not announced as
+                # replies to fabricated Telegram messages.
+                job["notified"] = True
+            else:
+                try:
+                    self._notify(job)
+                except Exception as exc:
+                    logger.warning("Telegram order notification failed: %s", type(exc).__name__)
+                    job["due"] = self.clock() + 15
             self._commit_result(job, after_notification=True)
         return True
 

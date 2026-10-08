@@ -81,6 +81,64 @@ class OrderJournal:
                           OR (approved IS NOT NULL AND user_id>0 AND approved_chat_id=user_id))
                 );
                 CREATE INDEX IF NOT EXISTS app_pairings_expiry ON app_pairings(expires);
+                CREATE TABLE IF NOT EXISTS return_cases (
+                    id TEXT PRIMARY KEY,
+                    chat_id INTEGER NOT NULL,
+                    owner_id INTEGER NOT NULL,
+                    order_key TEXT NOT NULL,
+                    outbound_ttn TEXT NOT NULL,
+                    sender_profile TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    warehouse_state TEXT NOT NULL,
+                    finance_state TEXT NOT NULL,
+                    reverse_ttn TEXT,
+                    created REAL NOT NULL,
+                    updated REAL NOT NULL,
+                    UNIQUE(chat_id,owner_id,order_key)
+                );
+                CREATE INDEX IF NOT EXISTS return_cases_owner_updated
+                    ON return_cases(chat_id,owner_id,updated DESC);
+                CREATE TABLE IF NOT EXISTS return_events (
+                    id TEXT PRIMARY KEY,
+                    case_id TEXT NOT NULL REFERENCES return_cases(id),
+                    actor_id INTEGER NOT NULL,
+                    at REAL NOT NULL,
+                    event_type TEXT NOT NULL,
+                    details TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS return_events_case_time
+                    ON return_events(case_id,at,id);
+                CREATE TABLE IF NOT EXISTS tracking_snapshots (
+                    order_key TEXT PRIMARY KEY,
+                    chat_id INTEGER NOT NULL,
+                    owner_id INTEGER NOT NULL,
+                    ttn TEXT NOT NULL,
+                    sender_profile TEXT NOT NULL,
+                    status_code TEXT NOT NULL DEFAULT '',
+                    status_text TEXT NOT NULL DEFAULT '',
+                    phase TEXT NOT NULL DEFAULT '',
+                    checked_at REAL NOT NULL DEFAULT 0,
+                    attempted_at REAL NOT NULL DEFAULT 0,
+                    error_code TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS tracking_snapshots_scope
+                    ON tracking_snapshots(chat_id,owner_id,checked_at);
+                CREATE TABLE IF NOT EXISTS tracking_events (
+                    id TEXT PRIMARY KEY,
+                    order_key TEXT NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    owner_id INTEGER NOT NULL,
+                    ttn TEXT NOT NULL,
+                    sender_profile TEXT NOT NULL,
+                    at REAL NOT NULL,
+                    status_code TEXT NOT NULL,
+                    status_text TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    source TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS tracking_events_order_time
+                    ON tracking_events(order_key,at DESC);
+
             """)
             self._connection.commit()
 

@@ -1,0 +1,42 @@
+name: SAFAR carrier status scheduler (opt-in)
+
+on:
+  schedule:
+    - cron: "12,42 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  verified-carrier-sync:
+    # Explicit repository owner opt-in; never activate by merging alone.
+    if: ${{ vars.SAFAR_SCHEDULER_ENABLED == '1' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Read-only carrier monitor (up to 4 waybills)
+        env:
+          SAFAR_SYNC_URL: ${{ secrets.SAFAR_SYNC_URL }}
+          SAFAR_SYNC_SECRET: ${{ secrets.SAFAR_SYNC_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$SAFAR_SYNC_URL" || -z "$SAFAR_SYNC_SECRET" || ${#SAFAR_SYNC_SECRET} -lt 32 ]]; then
+            echo "SAFAR scheduler secret and endpoint must be configured."
+            exit 1
+          fi
+          case "$SAFAR_SYNC_URL" in
+            https://*/api/internal/safar/sync) ;;
+            *) echo "SAFAR scheduler endpoint must be an exact HTTPS internal sync route."; exit 1;;
+          esac
+          # Secrets are only transmitted in the HTTPS header, never the URL.
+          # No verbose/debug curl or potentially sensitive response bodies.
+          curl --silent --show-error --fail \
+            --max-time 105 --connect-timeout 20 \
+            --retry 1 --retry-delay 3 \
+            -X POST \
+            -H "X-Safar-Sync-Token: $SAFAR_SYNC_SECRET" \
+            -H "Accept: application/json" \
+            --output /dev/null \
+            "$SAFAR_SYNC_URL"
+          echo "Carrier monitor invocation finished."

@@ -3,6 +3,7 @@ import copy
 import hashlib
 import hmac
 import json
+import os
 import time
 import unittest
 from urllib.parse import urlencode
@@ -405,6 +406,447 @@ class SafarAppTests(unittest.TestCase):
         self.assertIsNone(result["weight"])
         self.assertEqual(len(result["photos"]), 1)
         self.assertNotIn("secret-photo-id", json.dumps(result))
+
+    def test_return_cases_are_distinct_from_deleted_receipts_and_scoped(self):
+        self.login()
+        self.assertEqual(self.get("/api/safar/returns").json["cases"], [])
+        payload = {"order_id": "job-alpha", "reason": "refused_by_recipient", "chat_id": USER}
+        opened = self.post("/api/safar/returns", payload)
+        self.assertEqual(opened.status_code, 201)
+        case = opened.json["case"]
+        self.assertEqual(case["outbound_ttn"], SAMPLE["result"]["ttn"])
+        self.assertEqual(case["sender_profile"], "default")
+        self.assertEqual(case["carrier_state"], "unverified")
+        self.assertEqual(case["warehouse_state"], "not_received")
+        self.assertEqual(case["finance_state"], "unreviewed")
+        self.assertEqual(self.post("/api/safar/returns", payload).status_code, 200)
+        self.assertEqual(len(self.get("/api/safar/returns").json["cases"]), 1)
+        details = self.get("/api/safar/returns/" + case["id"])
+        self.assertEqual(details.status_code, 200)
+        self.assertEqual(details.json["case"]["events"][0]["event_type"], "case_opened")
+        self.assertEqual(self.get("/api/safar/returns/" + case["id"] + "?chat_id=" + str(GROUP)).status_code, 404)
+        self.assertEqual(self.post("/api/safar/returns", {**payload, "chat_id": 43201}).status_code, 403)
+        self.assertEqual(self.post("/api/safar/returns", {**payload, "reason": "deleted"}).status_code, 422)
+        self.assertEqual(self.post("/api/safar/returns", {**payload, "order_id": "nonexistent"}).status_code, 422)
+        self.assertEqual(self.post("/api/safar/returns", {**payload, "order_id": "job-alpha"}, csrf=False).status_code, 403)
+        self.carrier.create_ttn.assert_not_called()
+        self.carrier.get_ttn_status.assert_not_called()
+
+    def test_cancelled_ttn_does_not_automatically_create_return(self):
+        cancelled = copy.deepcopy(SAMPLE)
+        cancelled["key"] = "job-cancelled"
+        cancelled["state"] = "deleted"
+        self.seed(cancelled)
+        self.login()
+        result = self.post("/api/safar/returns",
+                           {"order_id": "job-cancelled", "reason": "unclaimed", "chat_id": USER})
+        self.assertEqual(result.status_code, 422)
+        self.assertEqual(self.get("/api/safar/returns").json["cases"], [])
+
+
+    def test_app_intake_disabled_by_default_and_rejects_wrong_actor_or_csrf(self):
+        request_id = "fixed-client-idempotency-00001"
+        payload = {"text": "ФИО: Іван Іваненко", "request_id": request_id, "chat_id": USER}
+        self.assertEqual(self.post("/api/safar/orders/intake", payload).status_code, 401)
+        self.login()
+        with patch.dict(os.environ, {"SAFAR_APP_AUTO_CREATE": "0"}):
+            self.assertEqual(self.post("/api/safar/orders/intake", payload).status_code, 503)
+        with patch.dict(os.environ, {"SAFAR_APP_AUTO_CREATE": "1"}):
+            self.assertEqual(self.post("/api/safar/orders/intake", payload, csrf=False).status_code, 403)
+            self.assertEqual(self.post("/api/safar/orders/intake", payload, origin="https://hostile.example").status_code, 403)
+            self.assertEqual(self.post("/api/safar/orders/intake", {**payload, "chat_id": 9876}).status_code, 403)
+            self.assertEqual(self.post("/api/safar/orders/intake", {**payload, "request_id": "bad"}).status_code, 422)
+            self.assertEqual(self.post("/api/safar/orders/intake", {**payload, "text": ""}).status_code, 422)
+        self.carrier.create_ttn.assert_not_called()
+
+    def test_app_intake_has_no_fake_telegram_ids_and_retries_are_idempotent(self):
+        self.login()
+        request_id = "fixed-client-idempotency-00002"
+        payload = {"text": "ФИО: Іван Іваненко\nТелефон: 0500000001\nГород: Одеса\nОтделение: 4\nОценка: 1600",
+                   "request_id": request_id, "chat_id": USER}
+        self.carrier.create_ttn.return_value = {"ttn": "20400000000011"}
+        with patch.dict(os.environ, {"SAFAR_APP_AUTO_CREATE": "1"}):
+            created = self.post("/api/safar/orders/intake", payload)
+            self.assertEqual(created.status_code, 202)
+            self.assertTrue(created.json["accepted"])
+            self.assertEqual(created.json["order"]["source"], "app")
+            self.assertEqual(created.json["order"]["state"], "collecting")
+            duplicate = self.post("/api/safar/orders/intake", payload)
+            self.assertEqual(duplicate.status_code, 200)
+            self.assertFalse(duplicate.json["accepted"])
+            self.assertEqual(created.json["order"]["id"], duplicate.json["order"]["id"])
+            self.assertEqual(self.post("/api/safar/orders/intake",
+                                       {**payload, "text": payload["text"] + " changed"}).status_code, 409)
+            key = created.json["order"]["id"]
+            stored = self.pipeline._job(key)
+            self.assertIsNone(stored["anchor_id"])
+            self.assertTrue(all("message_id" not in message for message in stored["messages"]))
+            self.assertTrue(self.pipeline.tick())
+            self.assertEqual(self.pipeline._job(key)["state"], "created")
+            self.assertEqual(self.pipeline._job(key)["result"]["ttn"], "20400000000011")
+            self.assertEqual(self.carrier.create_ttn.call_count, 1)
+            self.telegram.send_message.assert_not_called()
+            self.telegram.send_photo.assert_not_called()
+            self.assertEqual(self.post("/api/safar/orders/intake", payload).status_code, 200)
+            self.assertEqual(self.carrier.create_ttn.call_count, 1)
+            details = self.get("/api/safar/orders/" + key)
+            self.assertEqual(details.status_code, 200)
+            self.assertEqual(details.json["order"]["source"], "app")
+            self.assertIn("Іван Іваненко", details.json["order"]["source_text"])
+
+    def test_app_replay_guard_new_request_id_does_not_block_legitimate_repeat_customer(self):
+        """Within two minutes exact text is one intake; phone/name never form global identity."""
+        text = "ФИО: Іван Іваненко\nТелефон: 0500000001\nГород: Одеса\nОтделение: 4\nОценка: 1600"
+        first, new = self.pipeline.ingest_app_text(USER, USER, text, "new-client-id-00000001")
+        self.assertTrue(new)
+        repeated, new = self.pipeline.ingest_app_text(
+            USER, USER, text.replace("\n", "\n  "), "new-client-id-00000002")
+        self.assertFalse(new)
+        self.assertEqual(first["key"], repeated["key"])
+        # Different item/order text from the same person is not a duplicate.
+        different, new = self.pipeline.ingest_app_text(
+            USER, USER, text + "\nОписание: другая пара", "new-client-id-00000003")
+        self.assertTrue(new)
+        self.assertNotEqual(first["key"], different["key"])
+        # Identical order well after the short replay window remains possible.
+        with patch.object(self.pipeline, "clock", return_value=first["created_at"] + 121):
+            later, new = self.pipeline.ingest_app_text(USER, USER, text, "new-client-id-00000004")
+        self.assertTrue(new)
+        self.assertNotEqual(first["key"], later["key"])
+        self.carrier.create_ttn.assert_not_called()
+
+    def test_photo_intake_is_private_scoped_idempotent_and_does_not_duplicate_ttn(self):
+        from io import BytesIO
+        from types import SimpleNamespace
+        self.login()
+        path = "/api/safar/orders/intake/photo"
+        headers = {"Origin": BASE, "X-CSRF-Token": self.csrf}
+        text = "ФИО: Іван Іваненко\nТелефон: 0500000001\nГород: Одеса\nОтделение: 4\nОценка: 1600"
+        request_id = "private-photo-request-000001"
+        self.carrier.create_ttn.return_value = {"ttn": "20400000000077"}
+        self.telegram.send_photo.return_value = SimpleNamespace(
+            photo=[SimpleNamespace(file_id="safe-private-telegram-file",
+                    file_unique_id="private-image-sha", width=600, height=800)])
+        fields = lambda: {"chat_id": str(USER), "text": text,
+                          "request_id": request_id,
+                          "image": (BytesIO(JPEG), "sample.jpg", "image/jpeg")}
+        with patch.dict(os.environ, {"SAFAR_APP_AUTO_CREATE": "1",
+                                      "SAFAR_APP_MEDIA_INTAKE": "0"}):
+            self.assertEqual(self.client.post(path, base_url=BASE, headers=headers,
+                 data=fields(), content_type="multipart/form-data").status_code, 503)
+        with patch.dict(os.environ, {"SAFAR_APP_AUTO_CREATE": "1",
+                                      "SAFAR_APP_MEDIA_INTAKE": "1"}):
+            result = self.client.post(path, base_url=BASE, headers=headers,
+                 data=fields(), content_type="multipart/form-data")
+            self.assertEqual(result.status_code, 202)
+            self.assertTrue(result.json["accepted"])
+            self.assertEqual(result.json["order"]["source"], "app")
+            self.assertEqual(len(result.json["order"]["photos"]), 1)
+            order_key = result.json["order"]["id"]
+            self.telegram.send_photo.assert_called_once()
+            self.assertEqual(self.telegram.send_photo.call_args.args[0], USER)
+            stored = self.pipeline._job(order_key)
+            self.assertIsNone(stored["anchor_id"])
+            self.assertEqual(stored["messages"][0]["photo"][0]["file_id"],
+                             "safe-private-telegram-file")
+            self.assertEqual(stored["source_text"], text)
+            self.assertEqual(len(stored["app_image_sha256"]), 64)
+            repeated = self.client.post(path, base_url=BASE, headers=headers,
+                data=fields(), content_type="multipart/form-data")
+            self.assertEqual(repeated.status_code, 200)
+            self.assertFalse(repeated.json["accepted"])
+            self.telegram.send_photo.assert_called_once()
+            self.assertEqual(self.client.post(path, base_url=BASE, headers=headers,
+                data={**fields(), "text": text + "\nchanged"},
+                content_type="multipart/form-data").status_code, 409)
+            self.assertEqual(self.pipeline._job(order_key)["state"], "collecting")
+            self.carrier.create_ttn.assert_not_called()
+            self.assertTrue(self.pipeline.tick())
+            self.assertEqual(self.pipeline._job(order_key)["state"], "created")
+            self.assertEqual(self.carrier.create_ttn.call_count, 1)
+
+    def test_photo_intake_never_uploads_untrusted_files_or_unavailable_ocr(self):
+        from io import BytesIO
+        self.login()
+        path = "/api/safar/orders/intake/photo"
+        headers = {"Origin": BASE, "X-CSRF-Token": self.csrf}
+        base = {"chat_id": str(USER), "request_id": "private-image-request-00002"}
+        def upload(blob, mime="image/jpeg", text=""):
+            return self.client.post(path, base_url=BASE, headers=headers,
+                data={**base, "text": text, "image": (BytesIO(blob), "screenshot.jpg", mime)},
+                content_type="multipart/form-data")
+        with patch.dict(os.environ, {"SAFAR_APP_AUTO_CREATE": "1",
+                                      "SAFAR_APP_MEDIA_INTAKE": "1",
+                                      "SAFAR_OCR_ENABLED": "0"}):
+            self.assertEqual(upload(JPEG).status_code, 422)
+            self.assertEqual(upload(b"fake-not-a-jpeg" * 2, text="Name: Sample").status_code, 415)
+            self.assertEqual(upload(JPEG, "image/png", text="Name: Sample").status_code, 415)
+            self.assertEqual(upload(JPEG, text="valid", mime="application/pdf").status_code, 415)
+            self.assertEqual(upload(JPEG, text="ok", mime="image/jpeg").status_code, 502)
+            self.telegram.send_photo.assert_called_once()
+            self.assertEqual(self.client.post(path, base_url=BASE,
+                 data={**base, "text": "valid", "image": (BytesIO(JPEG), "pic.jpg", "image/jpeg")},
+                 content_type="multipart/form-data").status_code, 403)
+            self.carrier.create_ttn.assert_not_called()
+
+    def test_return_carrier_tracking_is_read_only_scoped_and_uses_original_sender(self):
+        self.assertEqual(self.get("/api/safar/returns/not-found/tracking").status_code, 401)
+        self.login()
+        opened = self.post("/api/safar/returns",
+                           {"order_id": "job-alpha", "reason": "unclaimed", "chat_id": USER})
+        self.assertEqual(opened.status_code, 201)
+        case = opened.json["case"]
+        self.pipeline.set_sender_preference(USER, USER, "other")
+        tracking = self.get("/api/safar/returns/" + case["id"] + "/tracking")
+        self.assertEqual(tracking.status_code, 200)
+        snapshot = tracking.json["tracking"]
+        self.assertEqual(snapshot["outbound_ttn"], SAMPLE["result"]["ttn"])
+        self.assertEqual(snapshot["source"], "nova_poshta")
+        self.assertEqual(snapshot["status_code"], "1")
+        self.assertEqual(snapshot["warehouse_state"], "not_received")
+        self.assertEqual(snapshot["finance_state"], "unreviewed")
+        self.assertEqual(snapshot["sender_profile"], "default")
+        self.carrier.get_ttn_status.assert_called_once()
+        self.other_carrier.get_ttn_status.assert_not_called()
+        self.assertEqual(self.get("/api/safar/returns/" + case["id"] + "/tracking?chat_id=" + str(GROUP)).status_code, 404)
+        self.assertEqual(len(self.get("/api/safar/returns").json["cases"]), 1)
+        self.assertEqual(len(self.get("/api/safar/returns/" + case["id"]).json["case"]["events"]), 1)
+
+    def test_operator_warehouse_receipt_requires_physical_evidence_and_is_idempotent(self):
+        self.login()
+        created = self.post("/api/safar/returns", {"order_id": "job-alpha",
+                          "reason": "refused_by_recipient", "chat_id": USER})
+        self.assertEqual(created.status_code, 201)
+        case_id = created.json["case"]["id"]
+        route = f"/api/safar/returns/{case_id}/warehouse-receipt"
+        target = {"chat_id": USER, "ttn": SAMPLE["result"]["ttn"],
+                  "physically_received": True}
+        for invalid in [
+            {**target, "ttn": "20400000000099"},
+            {**target, "ttn": "invalid"},
+            {**target, "physically_received": False},
+            {**target, "physically_received": "true"},
+        ]:
+            self.assertEqual(self.post(route, invalid).status_code, 422)
+        self.assertEqual(self.post(route, target, csrf=False).status_code, 403)
+        self.assertEqual(self.post(route, target, origin="https://hostile.example").status_code, 403)
+        self.assertEqual(self.post(route, {**target, "chat_id": GROUP}).status_code, 404)
+        before = self.get("/api/safar/returns/" + case_id).json["case"]
+        self.assertEqual(before["warehouse_state"], "not_received")
+        self.assertEqual(before["finance_state"], "unreviewed")
+        receipt = self.post(route, target)
+        self.assertEqual(receipt.status_code, 200)
+        self.assertTrue(receipt.json["changed"])
+        self.assertEqual(receipt.json["case"]["warehouse_state"], "received")
+        self.assertEqual(receipt.json["case"]["finance_state"], "unreviewed")
+        again = self.post(route, target)
+        self.assertEqual(again.status_code, 200)
+        self.assertFalse(again.json["changed"])
+        final = self.get("/api/safar/returns/" + case_id).json["case"]
+        self.assertEqual(
+            [e["event_type"] for e in final["events"]],
+            ["case_opened", "warehouse_received"])
+        self.carrier.create_ttn.assert_not_called()
+        self.carrier.get_ttn_status.assert_not_called()
+
+    def test_warehouse_receipt_accepts_previously_verified_reverse_ttn(self):
+        self.login()
+        created = self.post("/api/safar/returns", {"order_id": "job-alpha",
+                            "reason": "easy_return_after_delivery", "chat_id": USER})
+        case_id = created.json["case"]["id"]
+        reverse = "20400000000123"
+        self.carrier.get_ttn_status.return_value = {
+            "Number": reverse, "StatusCode": "4",
+            "LightReturnNumber": SAMPLE["result"]["ttn"]}
+        link = self.post(f"/api/safar/returns/{case_id}/link-easy-return",
+                         {"chat_id": USER, "reverse_ttn": reverse})
+        self.assertEqual(link.status_code, 200)
+        confirmed = self.post(f"/api/safar/returns/{case_id}/warehouse-receipt",
+                              {"chat_id": USER, "ttn": reverse,
+                               "physically_received": True})
+        self.assertEqual(confirmed.status_code, 200)
+        self.assertEqual(confirmed.json["case"]["reverse_ttn"], reverse)
+        self.assertEqual(confirmed.json["case"]["warehouse_state"], "received")
+        self.assertEqual(confirmed.json["case"]["finance_state"], "unreviewed")
+
+    def test_return_expenses_are_operator_reported_precise_scoped_and_idempotent(self):
+        self.login()
+        created = self.post("/api/safar/returns", {
+            "order_id": "job-alpha", "reason": "refused_by_recipient", "chat_id": USER})
+        case_id = created.json["case"]["id"]
+        url = f"/api/safar/returns/{case_id}/expense"
+        payload = {
+            "chat_id": USER, "amount": "120.50", "category": "return_delivery",
+            "reference": "receipt-108", "request_id": "return-expense-idempotency-01",
+            "acknowledged": True,
+        }
+        self.assertEqual(self.post(url, payload, csrf=False).status_code, 403)
+        self.assertEqual(self.post(url, {**payload, "chat_id": GROUP}).status_code, 404)
+        self.assertEqual(self.post(url, {**payload, "amount": "-100"}).status_code, 422)
+        self.assertEqual(self.post(url, {**payload, "amount": "NaN"}).status_code, 422)
+        self.assertEqual(self.post(url, {**payload, "amount": "10.999"}).status_code, 422)
+        self.assertEqual(self.post(url, {**payload, "acknowledged": False}).status_code, 422)
+        self.assertEqual(self.post(url, {**payload, "reference": ""}).status_code, 422)
+        first = self.post(url, payload)
+        self.assertEqual(first.status_code, 200)
+        self.assertTrue(first.json["changed"])
+        self.assertEqual(first.json["case"]["expense_total_kopeks"], 12050)
+        self.assertEqual(first.json["case"]["finance_state"], "unreviewed")
+        second = self.post(url, payload)
+        self.assertEqual(second.status_code, 200)
+        self.assertFalse(second.json["changed"])
+        self.assertEqual(second.json["case"]["expense_total_kopeks"], 12050)
+        self.assertEqual(
+            self.post(url, {**payload, "amount": "121.00"}).status_code, 409)
+        more = self.post(url, {**payload, "amount": "9.05", "category": "storage",
+                              "request_id": "return-expense-idempotency-02"})
+        self.assertEqual(more.status_code, 200)
+        self.assertEqual(more.json["case"]["expense_total_kopeks"], 12955)
+        listed = self.get("/api/safar/returns")
+        self.assertEqual(listed.json["cases"][0]["expense_total_kopeks"], 12955)
+        details = self.get(f"/api/safar/returns/{case_id}")
+        self.assertEqual(details.json["case"]["expense_total_kopeks"], 12955)
+        self.assertEqual([e["event_type"] for e in details.json["case"]["events"]],
+                         ["case_opened", "return_expense", "return_expense"])
+        self.carrier.create_ttn.assert_not_called()
+        self.carrier.get_ttn_status.assert_not_called()
+
+    def test_private_scheduler_disabled_unless_authenticated_and_migrated(self):
+        url = "/api/internal/safar/sync"
+        with patch.dict(os.environ, {"SAFAR_SYNC_ENABLED": "0",
+                                     "SAFAR_SYNC_SECRET": "Z" * 40}):
+            self.assertEqual(self.post(url).status_code, 404)
+        with patch.dict(os.environ, {"SAFAR_SYNC_ENABLED": "1",
+                                     "SAFAR_SYNC_SECRET": "tiny"}):
+            self.assertEqual(self.post(url).status_code, 404)
+        with patch.dict(os.environ, {"SAFAR_SYNC_ENABLED": "1",
+                                     "SAFAR_SYNC_SECRET": "Z" * 40}):
+            self.assertEqual(self.post(url).status_code, 403)
+            self.assertEqual(self.client.post(
+                url, base_url=BASE,
+                headers={"X-Safar-Sync-Token": "X" * 40}).status_code, 403)
+            accepted = self.client.post(
+                url, base_url=BASE,
+                headers={"X-Safar-Sync-Token": "Z" * 40})
+            self.assertEqual(accepted.status_code, 200)
+            self.assertTrue(accepted.json["ok"])
+            self.assertEqual(accepted.json["monitoring"]["checked"], 1)
+            self.assertEqual(accepted.json["monitoring"]["changed"], 1)
+            self.assertIn("no-store", accepted.headers["Cache-Control"])
+            # A second simultaneous scheduler hit must not duplicate events.
+            again = self.client.post(
+                url, base_url=BASE,
+                headers={"X-Safar-Sync-Token": "Z" * 40})
+            self.assertEqual(again.status_code, 200)
+            self.assertEqual(again.json["monitoring"]["attempted"], 0)
+        self.carrier.get_ttn_status.assert_called_once()
+        self.carrier.create_ttn.assert_not_called()
+
+    def test_carrier_timeline_is_private_durable_and_never_creates_return(self):
+        from safar_monitor import monitor_pass
+        self.login()
+        self.assertEqual(self.get("/api/safar/orders/job-alpha/carrier-events").json[
+            "timeline"]["events"], [])
+        now = time.time()
+        self.pipeline.set_sender_preference(USER, USER, "other")
+        first = monitor_pass(self.pipeline, clock=lambda: now)
+        self.assertEqual(first["checked"], 1)
+        self.assertEqual(first["changed"], 1)
+        historical = self.get("/api/safar/orders/job-alpha/carrier-events")
+        self.assertEqual(historical.status_code, 200)
+        self.assertEqual(len(historical.json["timeline"]["events"]), 1)
+        self.assertEqual(historical.json["timeline"]["events"][0]["code"], "1")
+        self.carrier.get_ttn_status.assert_called_once()
+        self.other_carrier.get_ttn_status.assert_not_called()
+        # Status 103 is just an NP observation, not a command to order a return.
+        self.carrier.get_ttn_status.return_value = {
+            "Number": SAMPLE["result"]["ttn"], "StatusCode": "103",
+            "Status": "Відмова одержувача"}
+        later = monitor_pass(self.pipeline, clock=lambda: now + 901)
+        self.assertEqual(later["checked"], 1)
+        self.assertEqual(later["changed"], 1)
+        events = self.get("/api/safar/orders/job-alpha/carrier-events").json[
+            "timeline"]["events"]
+        self.assertEqual([x["code"] for x in events], ["103", "1"])
+        self.assertEqual(self.get("/api/safar/returns").json["cases"], [])
+        self.assertEqual(self.get("/api/safar/orders/job-alpha/carrier-events?chat_id="
+                         + str(GROUP)).status_code, 404)
+        self.assertEqual(self.get("/api/safar/orders/unknown/carrier-events").status_code, 404)
+        self.carrier.create_ttn.assert_not_called()
+
+    def test_monitor_failed_read_preserves_last_carrier_truth(self):
+        from safar_monitor import monitor_pass
+        from np_client import NovaPoshtaTemporaryError
+        self.login()
+        now = time.time()
+        self.assertEqual(monitor_pass(self.pipeline, clock=lambda: now)["checked"], 1)
+        self.carrier.get_ttn_status.side_effect = NovaPoshtaTemporaryError("temporary")
+        failed = monitor_pass(self.pipeline, clock=lambda: now + 920)
+        self.assertEqual(failed["failed"], 1)
+        evidence = self.get("/api/safar/orders/job-alpha/carrier-events").json["timeline"]
+        self.assertEqual(evidence["last_verified"]["status_code"], "1")
+        self.assertTrue(evidence["last_verified"]["error"])
+        self.assertEqual(len(evidence["events"]), 1)
+        self.carrier.create_ttn.assert_not_called()
+
+    def test_carrier_refusal_code_is_observation_not_automatic_return_request(self):
+        self.login()
+        self.carrier.get_ttn_status.return_value = {
+            "Number": SAMPLE["result"]["ttn"], "StatusCode": "103",
+            "Status": "Відмова одержувача", "LightReturnNumber": ""}
+        result = self.get("/api/safar/orders/job-alpha/tracking")
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(self.get("/api/safar/returns").json["cases"], [])
+        self.carrier.create_ttn.assert_not_called()
+        self.carrier.order_cargo_return.assert_not_called()
+
+    def test_pdf_proxy_uses_original_sender_and_never_exposes_key(self):
+        self.login()
+        self.assertEqual(self.get("/api/safar/orders/job-alpha/pdf").status_code, 404)
+        self.carrier.fetch_ttn_pdf.return_value = b"%PDF-1.4\n%mock unit PDF\n%%EOF"
+        with patch.dict(os.environ, {"SAFAR_NP_PDF_PRINT": "1"}):
+            detail = self.get("/api/safar/orders/job-alpha")
+            self.assertTrue(detail.json["order"]["can_print"])
+            response = self.get("/api/safar/orders/job-alpha/pdf")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.mimetype, "application/pdf")
+            self.assertTrue(response.data.startswith(b"%PDF-"))
+            self.assertIn("attachment", response.headers["Content-Disposition"])
+            self.assertIn("no-store", response.headers["Cache-Control"])
+            self.assertNotIn("private-carrier-ref", str(response.headers))
+            self.carrier.fetch_ttn_pdf.assert_called_once_with(SAMPLE["result"]["ttn"], doc_ref="")
+            self.other_carrier.fetch_ttn_pdf.assert_not_called()
+            self.assertEqual(self.get("/api/safar/orders/job-alpha/pdf?chat_id=" + str(GROUP)).status_code, 404)
+            self.assertEqual(self.get("/api/safar/orders/no-such-job/pdf").status_code, 404)
+        self.assertEqual(self.get("/api/safar/orders/job-alpha").json["order"]["can_print"], False)
+
+    def test_easy_return_link_requires_exact_verified_original_and_never_orders_carrier(self):
+        self.login()
+        created = self.post("/api/safar/returns",
+                            {"chat_id": USER, "order_id": "job-alpha",
+                             "reason": "easy_return_after_delivery"})
+        self.assertEqual(created.status_code, 201)
+        case_id = created.json["case"]["id"]
+        reverse = "20400000000123"
+        route = f"/api/safar/returns/{case_id}/link-easy-return"
+        self.pipeline.set_sender_preference(USER, USER, "other")
+        self.carrier.get_ttn_status.return_value = {
+            "Number": reverse, "StatusCode": "4", "Status": "In transit",
+            "LightReturnNumber": "20400000000999"}
+        self.assertEqual(self.post(route, {"reverse_ttn": reverse, "chat_id": USER}).status_code, 422)
+        self.assertEqual(self.get("/api/safar/returns/" + case_id).json["case"]["reverse_ttn"], "")
+        self.carrier.get_ttn_status.return_value["LightReturnNumber"] = SAMPLE["result"]["ttn"]
+        response = self.post(route, {"reverse_ttn": reverse, "chat_id": USER})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json["linked"])
+        self.assertEqual(response.json["case"]["reverse_ttn"], reverse)
+        details = self.get("/api/safar/returns/" + case_id)
+        self.assertEqual(details.json["case"]["events"][-1]["event_type"], "verified_easy_return_link")
+        self.assertEqual(self.post(route, {"reverse_ttn": reverse, "chat_id": USER}).json["linked"], False)
+        self.assertEqual(self.post(route, {"reverse_ttn": reverse, "chat_id": GROUP}, csrf=False).status_code, 403)
+        self.assertEqual(self.post(route, {"reverse_ttn": "1234", "chat_id": USER}).status_code, 422)
+        self.other_carrier.get_ttn_status.assert_not_called()
+        self.carrier.create_ttn.assert_not_called()
 
 
 if __name__ == "__main__":

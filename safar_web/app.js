@@ -6,7 +6,7 @@ const demo = new URLSearchParams(location.search).get('demo') === '1';
 let language = 'uk';
 try { language = localStorage.getItem('safar.locale') === 'ru' ? 'ru' : 'uk'; } catch (_) {}
 const words = {
- home:['Головна','Главная'], orders:['Замовлення','Заказы'], shipments:['ТТН','ТТН'], senders:['Відправники','Отправители'], settings:['Налаштування','Настройки'],
+ returns:['Повернення','Возвраты'], returnNew:['Зафіксувати повернення','Зафиксировать возврат'], returnReason:['Причина повернення','Причина возврата'], returnHelp:['Заявка створюється вручну. Це не скасування ТТН і не доказ доставки товару назад.','Запись создаётся оператором. Это не удаление ТТН и не доказательство фактического возврата.'], returnSaved:['Повернення додано до окремого журналу.','Возврат добавлен в отдельный журнал.'], returnEmpty:['Повернень у цьому чаті не зареєстровано.','В этом чате возвраты пока не зарегистрированы.'], returnWarehouse:['Склад: очікуємо підтвердження','Склад: ожидает подтверждения'], returnUnknown:['Стан перевізника не перевірений','Статус перевозчика не проверен'], intake:['Додати замовлення','Добавить заказ'], intakeTitle:['Розумний прийом замовлення','Умный приём заказа'], intakeHelp:['Встав текст замовлення. SAFAR сам розпізнає поля та перевірить їх перед створенням ТТН.','Вставьте текст заказа. SAFAR сам извлечёт поля и проверит их перед созданием ТТН.'], intakeSource:['Текст замовлення','Текст заказа'], intakeSubmit:['Передати в автоматичну обробку','Передать на автоматическую обработку'], intakeDisabled:['Автоматичний прийом замовлень ще не дозволено адміністратором.','Автоматический приём заказов ещё не разрешён администратором.'], intakeImagesLater:['Фото та скриншоти: підключення захищеного сховища ще не завершене.','Фото и скриншоты: защищённое хранилище ещё не подключено.'], intakeQueued:['Замовлення збережено й передано в чергу.','Заказ сохранён и передан в очередь.'], intakeExisting:['Замовлення вже отримане; повтор не створений.','Заказ уже получен; повтор не создан.'], intakeEmpty:['Встав текст одного замовлення.','Вставьте текст одного заказа.'], radar:['Оперативний контроль','Оперативный контроль'], radarDesc:['Перевірені статуси Нової пошти для останніх ТТН. Перевірка виконується лише коли застосунок відкритий.','Проверенные статусы Новой Почты для последних ТТН. Проверка выполняется только при открытом приложении.'], radarNoStatus:['Перевірка ще не завершена','Проверка ещё не завершена'], radarError:['Статус тимчасово недоступний','Статус временно недоступен'], radarRefresh:['Оновити статуси','Обновить статусы'], home:['Головна','Главная'], orders:['Замовлення','Заказы'], shipments:['ТТН','ТТН'], senders:['Відправники','Отправители'], settings:['Налаштування','Настройки'],
  control:['Контроль відправок','Контроль отправок'], overviewDesc:['Замовлення, фото й накладні — з вашого Telegram-журналу.','Заказы, фото и накладные — из вашего Telegram-журнала.'],
  all:['Усі','Все'], fresh:['Нові','Новые'], processing:['В обробці','В обработке'], created:['ТТН створено','ТТН создана'], invalid:['Потрібна перевірка','Нужна проверка'], failed:['Помилка','Ошибка'], uncertain:['Перевірити у НП','Проверить в НП'], deleted:['Видалено','Удалено'],
  attention:['Потребують уваги','Требуют внимания'], total:['Всього замовлень','Всего заказов'], journal:['У вашому журналі','В вашем журнале'], issued:['Оформлені документи','Оформленные документы'], unresolved:['Помилки та перевірки','Ошибки и проверки'], queued:['Очікують завершення','Ожидают завершения'],
@@ -61,8 +61,10 @@ const dateStr = value => { const d = timestamp(value); return d ? new Intl.DateT
 const money = value => value === null || value === undefined || value === '' || !Number.isFinite(Number(value)) ? '—' : new Intl.NumberFormat(locale(), {maximumFractionDigits:2}).format(Number(value)) + ' ₴';
 const stateName = status => t({collecting:'fresh',processing:'processing',created:'created',invalid:'invalid',failed:'failed',uncertain:'uncertain',deleted:'deleted'}[status] || 'invalid');
 const badge = status => `<span class="state state-${['collecting','processing','created','invalid','failed','uncertain','deleted'].includes(status) ? status : 'invalid'}">${stateName(status)}</span>`;
-const tabs = [['home','home','home'],['orders','orders','orders'],['shipments','shipments','truck'],['senders','senders','users'],['settings','settings','settings']];
+const tabs = [['home','home','home'],['orders','orders','orders'],['shipments','shipments','truck'],['returns','returns','refresh'],['senders','senders','users'],['settings','settings','settings']];
 const view = {tab:'home',returnTab:'orders',filter:'all',search:'',sender:'',period:'all',sort:'updated_desc',chatId:null,scopes:[],selected:null,orders:[],counts:{},pagination:{},authed:false,loading:true,listLoading:false,moreLoading:false,error:'',detailLoading:false,detailError:'',detailCache:{},tracking:{},trackingLoading:false,trackingError:'',senders:null,sendersLoading:false,sendersError:'',analytics:null,analyticsLoading:false,analyticsError:'',csrf:'',expiresAt:null,lastSync:null,offline:!navigator.onLine || document.body.dataset.offlineShell === 'true',editing:false,editDraft:null,editError:'',saving:false,pair:null,pairBusy:false,pairError:'',photoErrors:new Set(),photoAttempts:{},photo:null,installPrompt:null,scopeLoading:false};
+view.returnCases = []; view.returnTracking = {}; view.returnTrackingBusy = {}; view.returnTrackingErrors = {}; view.returnsLoading = false; view.returnsError = '';
+view.carrierEvents = {}; view.autoIntakeEnabled = false; view.mediaIntakeEnabled = false; view.ocrEnabled = false; view.radarLoading = false; view.radarErrors = {};
 let requestSequence = 0, sessionEpoch = 0, expiryTimer = null, listController = null, searchTimer = null, pairingTimer = null, pairSequence = 0;
 let sessionChannel;
 try { sessionChannel = new BroadcastChannel('safar-session'); sessionChannel.onmessage = e => { if (e.data === 'logout') clearSession(); }; } catch (_) {}
@@ -116,7 +118,7 @@ function imagePreview(order,index=0,cls='order-img') {
  return `<div class="${cls} has-photo">${photoContent(order,index)}${cls === 'order-img' && photos.length > 1 ? `<span class="photo-count">${icon('photo')}${photos.length}</span>` : ''}</div>`;
 }
 function oneOrder(order) {
- return `<button type="button" class="order-row ${['invalid','failed','uncertain'].includes(order.state) ? 'order-attention' : ''}" data-order="${esc(order.id)}">${imagePreview(order)}<div class="order-main"><div class="order-name">${esc(order.recipient || t('unnamed'))}</div><div class="order-place">${esc([order.city,order.warehouse ? `${t('branch')} №${order.warehouse}` : ''].filter(Boolean).join(' · ') || t('unknownCity'))}</div><div class="order-extra"><span>${esc(dateStr(order.updated_at || order.created_at))}</span>${order.has_pending_edits || order.pending_order ? `<span class="draft-dot" title="${esc(t('staged'))}">${icon('edit')}</span>` : ''}</div></div><div class="order-meta"><div class="order-money">${money(order.declared)}</div><div class="order-cod">${esc(t('cod'))}: ${money(order.cod)}</div>${badge(order.state)}</div><span class="order-arrow" aria-hidden="true">›</span></button>`;
+ return `<button type="button" class="order-row ${['invalid','failed','uncertain'].includes(order.state) ? 'order-attention' : ''}" data-order="${esc(order.id)}">${imagePreview(order)}<div class="order-main"><div class="order-name">${esc(order.recipient || t('unnamed'))}${order.source === 'app' ? '<span class="source-chip">APP</span>' : ''}</div><div class="order-place">${esc([order.city,order.warehouse ? `${t('branch')} №${order.warehouse}` : ''].filter(Boolean).join(' · ') || t('unknownCity'))}</div><div class="order-extra"><span>${esc(dateStr(order.updated_at || order.created_at))}</span>${order.has_pending_edits || order.pending_order ? `<span class="draft-dot" title="${esc(t('staged'))}">${icon('edit')}</span>` : ''}</div></div><div class="order-meta"><div class="order-money">${money(order.declared)}</div><div class="order-cod">${esc(t('cod'))}: ${money(order.cod)}</div>${badge(order.state)}</div><span class="order-arrow" aria-hidden="true">›</span></button>`;
 }
 function panelOrders(data,limit=Infinity,shipment=false) {
  if (view.listLoading && !data.length) return skeleton();
@@ -134,17 +136,22 @@ function analyticsPanel() {
 }
 function home() {
  const c = totalCounts();
- return `<div class="screen">${title('SAFAR / COMMAND CENTER',t('control'),t('overviewDesc'))}<div class="hero"><div class="hero-copy"><div class="eyebrow">SHIPPING. REFINED.</div><h2>${esc(t('heroTitle'))}<br><span>${esc(t('heroSecond'))}</span></h2><p>${esc(t('heroDesc'))}</p><button type="button" class="button-primary" data-tab="orders">${icon('orders')}${esc(t('openOrders'))}${icon('arrow')}</button></div><div class="hero-art" aria-hidden="true">${icon('box')}<span>SAFAR / 02</span></div></div><div class="metrics">${stat(t('total'),view.lastSync ? c.all : '—',t('journal'),'orders',true)}${stat(t('attention'),view.lastSync ? c.attention : '—',t('unresolved'),'bell')}${stat(t('created'),view.lastSync ? c.created : '—',t('issued'),'truck')}${stat(t('processing'),view.lastSync ? c.processing : '—',t('queued'),'clock')}</div>${view.error ? errorPanel(view.error) : ''}<div class="grid-panels"><div class="panel"><div class="panel-header"><h3>${esc(t('recent'))}</h3><button type="button" class="section-more" data-tab="orders">${esc(t('seeAll'))}</button></div>${panelOrders(view.orders,5)}</div>${analyticsPanel()}</div></div>`;
+ return `<div class="screen">${title('SAFAR / COMMAND CENTER',t('control'),t('overviewDesc'))}<div class="hero"><div class="hero-copy"><div class="eyebrow">SHIPPING. REFINED.</div><h2>${esc(t('heroTitle'))}<br><span>${esc(t('heroSecond'))}</span></h2><p>${esc(t('heroDesc'))}</p><button type="button" class="button-primary" data-tab="orders">${icon('orders')}${esc(t('openOrders'))}${icon('arrow')}</button>${button('open-intake',t('intake'),'orders',view.offline,'button-primary')}</div><div class="hero-art" aria-hidden="true">${icon('box')}<span>SAFAR / 02</span></div></div><div class="metrics">${stat(t('total'),view.lastSync ? c.all : '—',t('journal'),'orders',true)}${stat(t('attention'),view.lastSync ? c.attention : '—',t('unresolved'),'bell')}${stat(t('created'),view.lastSync ? c.created : '—',t('issued'),'truck')}${stat(t('processing'),view.lastSync ? c.processing : '—',t('queued'),'clock')}</div>${view.error ? errorPanel(view.error) : ''}<div class="grid-panels"><div class="panel"><div class="panel-header"><h3>${esc(t('recent'))}</h3><button type="button" class="section-more" data-tab="orders">${esc(t('seeAll'))}</button></div>${panelOrders(view.orders,5)}</div>${analyticsPanel()}</div></div>`;
 }
 function filters() {
  const c = totalCounts();
  const profiles = view.senders?.profiles || [];
  return `<div class="toolbar"><label class="search">${icon('search')}<input id="orderSearch" type="search" autocomplete="off" maxlength="120" aria-label="${esc(t('searchLabel'))}" placeholder="${esc(t('search'))}" value="${esc(view.search)}"></label>${button('refresh',t('refresh'),'refresh',view.listLoading || view.offline,'button-quiet toolbar-refresh',`aria-label="${esc(t('refresh'))}"`)}</div><div class="chip-list">${[['all',`${t('all')} · ${c.all}`],['collecting',`${t('fresh')} · ${c.new}`],['processing',t('processing')],['created',`${t('created')} · ${c.created}`],['attention',`${t('attention')} · ${c.attention}`]].map(([value,label]) => `<button type="button" class="filter-chip ${view.filter === value ? 'active' : ''}" aria-pressed="${view.filter === value}" data-filter="${value}">${esc(label)}</button>`).join('')}</div><div class="filter-controls"><label>${esc(t('period'))}<select id="dateFilter">${[['all','anyTime'],['today','today'],['7','week'],['30','month']].map(([v,k]) => `<option value="${v}" ${view.period === v ? 'selected' : ''}>${esc(t(k))}</option>`).join('')}</select></label><label>${esc(t('senderFilter'))}<select id="senderFilter"><option value="">${esc(t('allSenders'))}</option>${profiles.map(p => `<option value="${esc(p.id)}" ${view.sender === p.id ? 'selected' : ''}>${esc(p.label || p.id)}</option>`).join('')}</select></label><label>${esc(t('sort'))}<select id="sortFilter"><option value="updated_desc" ${view.sort === 'updated_desc' ? 'selected' : ''}>${esc(t('newest'))}</option><option value="updated_asc" ${view.sort === 'updated_asc' ? 'selected' : ''}>${esc(t('oldest'))}</option></select></label></div>`;
 }
+function shipmentRadar() {
+ const issued=view.orders.filter(o=>o.ttn && /^\d{14}$/.test(o.ttn)).slice(0,3);
+ if (!issued.length) return "";
+ return `<div class="panel radar-panel"><div class="panel-header"><div><div class="eyebrow">SAFAR / CARRIER RADAR</div><h3>${esc(t("radar"))}</h3></div>${button("radar-refresh",t(view.radarLoading?"trackingLoading":"radarRefresh"),"refresh",view.radarLoading || view.offline)}</div><p class="muted-text">${esc(t("radarDesc"))}</p><div class="radar-list">${issued.map(o=>{const tdata=view.tracking[o.id];const verified=tdata?.tracking || tdata; const message=demo ? t("demoNotice") : verified?.status || verified?.status_text || t(view.radarErrors[o.id]?"radarError":"radarNoStatus");return `<button type="button" class="radar-row" data-order="${esc(o.id)}"><span class="radar-dot ${verified?.phase==="delivered"?"radar-complete":""}"></span><span class="radar-name"><strong>${esc(o.recipient)}</strong><small class="selectable">${esc(o.ttn)}</small></span><span class="radar-status"><strong>${esc(message)}</strong><small>${verified?.checked_at ? esc(dateStr(verified.checked_at)) : "—"}</small></span></button>`;}).join("")}</div></div>`;
+}
 function orderList(shipment=false) {
  const page = view.pagination, total = Number(page.total);
  const count = Number.isFinite(total) ? total : view.orders.length;
- return `<div class="screen">${title(shipment ? 'LOGISTICS / SHIPMENTS' : 'WORKSPACE / ORDER MANAGEMENT',t(shipment ? 'shipments' : 'orders'),t(shipment ? 'shipmentDesc' : 'inboxDesc'))}${filters()}${view.error ? errorPanel(view.error) : ''}<div class="panel"><div class="panel-header"><h3>${esc(t(shipment ? 'documents' : 'registry'))}</h3><span class="panel-small">${count} ${esc(t('records'))}</span></div>${panelOrders(view.orders,Infinity,shipment)}${view.orders.length ? `<div class="pagination"><span>${esc(t('shown'))} ${view.orders.length} ${esc(t('of'))} ${count}</span>${page.has_more ? button('load-more',t(view.moreLoading ? 'loading' : 'loadMore'),'arrow',view.moreLoading || view.offline) : ''}</div>` : ''}</div></div>`;
+ return `<div class="screen">${title(shipment ? 'LOGISTICS / SHIPMENTS' : 'WORKSPACE / ORDER MANAGEMENT',t(shipment ? 'shipments' : 'orders'),t(shipment ? 'shipmentDesc' : 'inboxDesc'))}${filters()}${view.error ? errorPanel(view.error) : ''}${shipment ? shipmentRadar() : ''}<div class="panel"><div class="panel-header"><h3>${esc(t(shipment ? 'documents' : 'registry'))}</h3><span class="panel-small">${count} ${esc(t('records'))}</span>${button('open-intake',t('intake'),'orders',view.offline,'button-primary')}</div>${panelOrders(view.orders,Infinity,shipment)}${view.orders.length ? `<div class="pagination"><span>${esc(t('shown'))} ${view.orders.length} ${esc(t('of'))} ${count}</span>${page.has_more ? button('load-more',t(view.moreLoading ? 'loading' : 'loadMore'),'arrow',view.moreLoading || view.offline) : ''}</div>` : ''}</div></div>`;
 }
 const fieldDefs = [['full_name','recipient','text','recipient'],['phone','phone','tel','phone'],['city','city','text','city'],['warehouse','warehouse','text','warehouse'],['cost','declared','text','declared'],['cod_amount','cod','text','cod'],['weight','weight','text','weight'],['description','description','text','description']];
 function editPanel(order) {
@@ -162,7 +169,10 @@ function trackingPanel(order) {
 function historyPanel(order) {
  const receipts = Array.isArray(order.receipts) ? order.receipts : [];
  const history = Array.isArray(order.history) ? order.history : [];
- return `<div class="detail-block"><h3>${esc(t('receiptHistory'))}</h3>${receipts.length ? `<ol class="timeline">${receipts.map(receipt => `<li><span class="timeline-dot"></span><div><strong class="selectable">${esc(receipt.ttn || '—')}</strong><p>${esc(receipt.sender_profile || order.sender_profile || '—')} · ${esc(dateStr(receipt.deleted_at || receipt.created_at || receipt.created || receipt.updated_at))}</p><span class="state ${receipt.state === 'deleted' || receipt.status === 'deleted' || receipt.deleted ? 'state-deleted' : 'state-created'}">${esc(receipt.state === 'deleted' || receipt.status === 'deleted' || receipt.deleted ? t('deleted') : t('created'))}</span></div></li>`).join('')}</ol>` : `<p class="muted-text">${esc(t('noHistory'))}</p>`}${history.length ? `<div class="divider"></div><h3>${esc(t('activityHistory'))}</h3><ol class="timeline">${history.slice(-12).reverse().map(event => `<li><span class="timeline-dot"></span><div><strong>${esc(stateName(event.state || event.status) || event.action || '—')}</strong><p>${esc(dateStr(event.deleted_at || event.at || event.created_at || event.time))}</p>${event.ttn ? `<span class="selectable">${esc(event.ttn)}</span>` : ''}</div></li>`).join('')}</ol>` : ''}</div>`;
+ const carrier = view.carrierEvents[order.id]?.timeline;
+ const carrierEntries=Array.isArray(carrier?.events)?carrier.events:[];
+ const carrierMarkup=carrierEntries.length ? `<div class="divider"></div><h3>${esc(language==="ru"?"История статусов перевозчика":"Історія статусів перевізника")}</h3><p class="muted-text">${esc(language==="ru"?"Подтверждённые наблюдения Новой Почты; не означают приёмку складом или выплату.":"Перевірені спостереження Нової пошти; не підтверджують приймання складом або виплату.")}</p><ol class="timeline">${carrierEntries.map(event=>`<li><span class="timeline-dot"></span><strong>${esc(event.status)}</strong><p>${esc(dateStr(event.at))} · NOVA POSHTA</p></li>`).join("")}</ol>` : "";
+ return `<div class="detail-block"><h3>${esc(t('receiptHistory'))}</h3>${receipts.length ? `<ol class="timeline">${receipts.map(receipt => `<li><span class="timeline-dot"></span><div><strong class="selectable">${esc(receipt.ttn || '—')}</strong><p>${esc(receipt.sender_profile || order.sender_profile || '—')} · ${esc(dateStr(receipt.deleted_at || receipt.created_at || receipt.created || receipt.updated_at))}</p><span class="state ${receipt.state === 'deleted' || receipt.status === 'deleted' || receipt.deleted ? 'state-deleted' : 'state-created'}">${esc(receipt.state === 'deleted' || receipt.status === 'deleted' || receipt.deleted ? t('deleted') : t('created'))}</span></div></li>`).join('')}</ol>` : `<p class="muted-text">${esc(t('noHistory'))}</p>`}${history.length ? `<div class="divider"></div><h3>${esc(t('activityHistory'))}</h3><ol class="timeline">${history.slice(-12).reverse().map(event => `<li><span class="timeline-dot"></span><div><strong>${esc(stateName(event.state || event.status) || event.action || '—')}</strong><p>${esc(dateStr(event.deleted_at || event.at || event.created_at || event.time))}</p>${event.ttn ? `<span class="selectable">${esc(event.ttn)}</span>` : ''}</div></li>`).join('')}</ol>` : ''}${carrierMarkup}</div>`;
 }
 function safeSource(value) { return typeof value === 'string' && /^https:\/\/t\.me\/c\/\d+\/\d+$/.test(value) ? value : ''; }
 function detail() {
@@ -171,7 +181,7 @@ function detail() {
  if (!order || (view.detailLoading && !view.detailCache[view.selected])) return `<div class="screen">${back}${title('ORDER / DETAIL',t('detail'),t('loading'))}${view.detailError ? errorPanel(view.detailError,'detail-retry') : skeleton(4)}</div>`;
  const photos = order.photos || [], source = safeSource(order.source_url);
  const ttnURL = !demo && /^\d{14}$/.test(order.ttn || '') ? `https://novaposhta.ua/tracking/?cargo_number=${encodeURIComponent(order.ttn)}` : '';
- return `<div class="screen">${back}${title('ORDER / DETAIL',t('detail'),[order.recipient,order.city].filter(Boolean).join(' · '))}${view.detailError ? errorPanel(view.detailError,'detail-retry') : ''}<div class="details-grid"><div><div class="detail-block"><div class="detail-head"><h3>${esc(t('productPhotos'))}</h3>${badge(order.state)}</div><div class="eyebrow">${photos.length} ${esc(t('photos'))} / TELEGRAM</div>${photos.length ? `<div class="gallery">${photos.map((_,index) => `<button type="button" class="gallery-item has-photo" data-photo="${index}" aria-label="${esc(t('photoOpen'))} ${index + 1}">${photoContent(order,index)}</button>`).join('')}</div>` : `<div class="no-photo">${icon('photo')}${esc(t('noPhotos'))}</div>`}<div class="divider"></div>${kv(t('description'),esc(order.description || '—'))}<div class="amounts"><div><span>${esc(t('declared'))}</span><strong>${money(order.declared)}</strong></div><div><span>${esc(t('cod'))}</span><strong>${money(order.cod)}</strong></div></div></div><div class="detail-block"><h3>${esc(t('recipient'))}</h3>${kv(t('recipient'),esc(order.recipient || '—'))}${kv(t('phone'),esc(order.phone || '—'))}${kv(t('city'),esc(order.city || '—'))}${kv(t('area'),esc(order.area || '—'))}${kv(t('warehouse'),esc(order.warehouse || '—'))}${kv(t('weight'),esc(order.weight || '—'))}</div>${order.source_text || source ? `<div class="detail-block"><h3>${esc(t('source'))}</h3>${order.source_text ? `<pre class="source-text">${esc(order.source_text)}</pre>` : ''}${source ? `<a class="button-quiet source-link" href="${esc(source)}" target="_blank" rel="noopener noreferrer">${icon('link')}${esc(t('sourceLink'))}</a>` : ''}</div>` : ''}${historyPanel(order)}</div><div><div class="detail-block ttn-block"><div class="detail-head"><h3>${esc(t('waybill'))}</h3>${icon('truck')}</div><div class="eyebrow">NOVA POSHTA</div><p class="ttn-large selectable">${esc(order.ttn || t('noTtn'))}</p>${badge(order.state)}${order.ttn ? `<div class="ttn-actions">${button('copy',t('copy'),'copy',false,'button-quiet',`data-ttn="${esc(order.ttn)}"`)}${ttnURL ? `<a class="button-quiet" href="${esc(ttnURL)}" target="_blank" rel="noopener noreferrer">${icon('link')}${esc(t('carrierLink'))}</a>` : ''}${button('track',t(view.trackingLoading ? 'trackingLoading' : 'tracking'),'refresh',view.trackingLoading || view.offline)}</div>${trackingPanel(order)}` : `<p class="muted-text">${esc(t('trackingHint'))}</p>`}</div>${editPanel(order)}<div class="detail-block"><h3>${esc(t('operations'))}</h3>${kv(t('account'),esc(order.sender_profile || '—'))}${kv(t('createdAt'),esc(dateStr(order.created_at)))}${kv(t('updatedAt'),esc(dateStr(order.updated_at)))}${kv(t('status'),esc(stateName(order.state)))}${order.error || order.notice ? `<div class="notice">${esc(order.error || order.notice)}</div>` : ''}</div></div></div></div>`;
+ return `<div class="screen">${back}${title('ORDER / DETAIL',t('detail'),[order.recipient,order.city].filter(Boolean).join(' · '))}${view.detailError ? errorPanel(view.detailError,'detail-retry') : ''}<div class="details-grid"><div><div class="detail-block"><div class="detail-head"><h3>${esc(t('productPhotos'))}</h3>${badge(order.state)}</div><div class="eyebrow">${photos.length} ${esc(t('photos'))} / TELEGRAM</div>${photos.length ? `<div class="gallery">${photos.map((_,index) => `<button type="button" class="gallery-item has-photo" data-photo="${index}" aria-label="${esc(t('photoOpen'))} ${index + 1}">${photoContent(order,index)}</button>`).join('')}</div>` : `<div class="no-photo">${icon('photo')}${esc(t('noPhotos'))}</div>`}<div class="divider"></div>${kv(t('description'),esc(order.description || '—'))}<div class="amounts"><div><span>${esc(t('declared'))}</span><strong>${money(order.declared)}</strong></div><div><span>${esc(t('cod'))}</span><strong>${money(order.cod)}</strong></div></div></div><div class="detail-block"><h3>${esc(t('recipient'))}</h3>${kv(t('recipient'),esc(order.recipient || '—'))}${kv(t('phone'),esc(order.phone || '—'))}${kv(t('city'),esc(order.city || '—'))}${kv(t('area'),esc(order.area || '—'))}${kv(t('warehouse'),esc(order.warehouse || '—'))}${kv(t('weight'),esc(order.weight || '—'))}</div>${order.source_text || source ? `<div class="detail-block"><h3>${esc(t('source'))}</h3>${order.source_text ? `<pre class="source-text">${esc(order.source_text)}</pre>` : ''}${source ? `<a class="button-quiet source-link" href="${esc(source)}" target="_blank" rel="noopener noreferrer">${icon('link')}${esc(t('sourceLink'))}</a>` : ''}</div>` : ''}${historyPanel(order)}</div><div><div class="detail-block ttn-block"><div class="detail-head"><h3>${esc(t('waybill'))}</h3>${icon('truck')}</div><div class="eyebrow">NOVA POSHTA</div><p class="ttn-large selectable">${esc(order.ttn || t('noTtn'))}</p>${badge(order.state)}${order.ttn ? `<div class="ttn-actions">${button('copy',t('copy'),'copy',false,'button-quiet',`data-ttn="${esc(order.ttn)}"`)}${ttnURL ? `<a class="button-quiet" href="${esc(ttnURL)}" target="_blank" rel="noopener noreferrer">${icon('link')}${esc(t('carrierLink'))}</a>` : ''}${order.can_print && !demo ? `<a class="button-quiet" href="${esc(scopedURL('/api/safar/orders/' + encodeURIComponent(order.id) + '/pdf'))}" rel="noopener noreferrer" download>${icon('download')}${esc(language==='ru'?'Скачать PDF ТТН':'Завантажити PDF ТТН')}</a>` : ''}${button('track',t(view.trackingLoading ? 'trackingLoading' : 'tracking'),'refresh',view.trackingLoading || view.offline)}</div>${trackingPanel(order)}` : `<p class="muted-text">${esc(t('trackingHint'))}</p>`}</div>${editPanel(order)}${order.state === 'created' ? `<div class="detail-block"><h3>${esc(t('returns'))}</h3><p class="muted-text">${esc(t('returnHelp'))}</p>${button('open-return',t('returnNew'),'refresh',view.offline,'button-quiet')}</div>` : ''}<div class="detail-block"><h3>${esc(t('operations'))}</h3>${kv(t('account'),esc(order.sender_profile || '—'))}${kv(t('createdAt'),esc(dateStr(order.created_at)))}${kv(t('updatedAt'),esc(dateStr(order.updated_at)))}${kv(t('status'),esc(stateName(order.state)))}${order.error || order.notice ? `<div class="notice">${esc(order.error || order.notice)}</div>` : ''}</div></div></div></div>`;
 }
 function senders() {
  const data = view.senders, profiles = data?.profiles || [];
@@ -182,6 +192,19 @@ function senders() {
  return `<div class="screen">${title('IDENTITY / ACCOUNTS',t('senders'),t('senderDesc'))}${content}${!profiles.some(p => p.id === 'fop' && p.configured) ? `<div class="fop-pending">${icon('lock')}<div><strong>${esc(t('fopPending'))}</strong><p>${esc(t('senderPrivacy'))}</p></div></div>` : `<div class="notice">${esc(t('senderPrivacy'))}</div></div>`}`;
 }
 function scopeControl() { return view.scopes.length > 1 ? `<label class="scope-control"><span>${esc(t('scope'))}</span><select id="scopeFilter">${view.scopes.map(scope => `<option value="${esc(scope.chat_id)}" ${String(scope.chat_id) === String(view.chatId) ? 'selected' : ''}>${esc(scope.label)} · ${Number(scope.order_count) || 0}</option>`).join('')}</select></label>` : ''; }
+function returnScreen() {
+ const cases=view.returnCases || [];
+ const labels={refused_by_recipient:language==="ru"?"Отказ получателя":"Відмова одержувача",unclaimed:language==="ru"?"Не забрали":"Не забрали",easy_return_after_delivery:language==="ru"?"Лёгкий возврат":"Легке повернення",customer_exchange:language==="ru"?"Обмен":"Обмін",other:language==="ru"?"Другая причина":"Інша причина"};
+ const item=c=>{
+  const received=c.warehouse_state==="received";
+  const warehouseLabel=received?(language==="ru"?"Принято на складе":"Прийнято на складі"):t("returnWarehouse");
+  const financeLabel=language==="ru"?"Финансы не подтверждены":"Фінанси не підтверджені";
+  const tr=view.returnTracking[c.id], busy=!!view.returnTrackingBusy[c.id], err=view.returnTrackingErrors[c.id];
+  const latest=tr && tr.status ? `<div class="return-carrier" role="status"><div class="eyebrow">NOVA POSHTA / ${esc(t("checked"))} ${esc(dateStr(tr.checked_at))}</div><strong>${esc(tr.status)}</strong><p>${esc(warehouseLabel)}</p></div>` : `<p class="muted-text">${esc(t("returnUnknown"))}</p>`;
+  return `<article class="return-case-card"><div class="return-case-head"><div><div class="eyebrow">REVERSE / CASE</div><h3>${esc(labels[c.reason] || labels.other)}</h3><p class="selectable">${esc(c.outbound_ttn)}</p></div><span class="state ${received?"state-created":"state-uncertain"}">${esc(warehouseLabel)}</span></div><div class="return-case-meta">${esc(dateStr(c.created_at))} · ${esc(c.sender_profile)}</div><div class="return-finance-state">${icon("shield")}<span>${esc(financeLabel)}${c.expense_total_kopeks>0 ? ` · ${esc(language==="ru"?"Расходы (со слов оператора)":"Витрати (зі слів оператора)")}: ${esc((c.expense_total_kopeks / 100).toFixed(2))} ₴` : ""}</span></div>${latest}${err ? `<p class="form-error" role="alert">${esc(err)}</p>` : ""}<div class="return-case-actions">${button("track-return",t(busy ? "trackingLoading" : "tracking"),"refresh",busy || view.offline,"button-quiet",`data-case-id="${esc(c.id)}"`)}${button("open-expense",language==="ru"?"Записать расход":"Записати витрати","edit",view.offline || demo,"button-quiet",`data-case-id="${esc(c.id)}"`)}${!received ? button("open-warehouse",language==="ru"?"Принять на склад":"Прийняти на склад","check",view.offline || demo,"button-primary",`data-case-id="${esc(c.id)}"`) : ""}${c.reason==="easy_return_after_delivery" && !c.reverse_ttn ? button("open-easy-link",language==="ru"?"Связать обратную ТТН":"Пов’язати зворотну ТТН","link",view.offline,"button-quiet",`data-case-id="${esc(c.id)}"`) : ""}<button class="button-quiet" data-order="${esc(c.order_id)}">${icon("arrow")}${esc(t("detail"))}</button></div></article>`;
+ };
+ return `<div class="screen">${title("REVERSE / LOGISTICS",t("returns"),t("returnHelp"))}${view.returnsError ? errorPanel(view.returnsError,"refresh-returns") : ""}<div class="panel"><div class="panel-header"><h3>${esc(t("returns"))}</h3><span class="panel-small">${cases.length} ${esc(t("records"))}</span>${button("refresh-returns",t("refresh"),"refresh",view.returnsLoading || view.offline)}</div>${view.returnsLoading ? skeleton(3) : cases.length ? `<div class="return-case-list">${cases.map(item).join("")}</div>` : empty(t("returnEmpty"),t("returnHelp"))}</div></div>`;
+}
 function settings() {
  return `<div class="screen">${title('SYSTEM / PREFERENCES',t('settings'),t('preferences'))}<div class="settings-grid"><div class="detail-block"><h3>${esc(t('session'))}</h3>${kv('SAFAR APP','v0.2 · PWA')}${kv(t('accessType'),esc(demo ? 'DEMO' : t('verified')))}${kv(t('scope'),esc(currentScope() || '—'))}${kv(t('expires'),demo ? '—' : esc(dateStr(view.expiresAt)))}${scopeControl()}${!demo ? `<div class="divider"></div>${button('logout',t('logout'),'logout')}` : ''}</div><div class="detail-block"><h3>${esc(t('locale'))}</h3><div class="language-options"><button type="button" class="filter-chip ${language === 'uk' ? 'active' : ''}" data-language="uk" aria-pressed="${language === 'uk'}" lang="uk">Українська</button><button type="button" class="filter-chip ${language === 'ru' ? 'active' : ''}" data-language="ru" aria-pressed="${language === 'ru'}" lang="ru">Русский</button></div><div class="divider"></div><h3>${esc(t('install'))}</h3><p class="muted-text">${esc(t('installHelp'))}</p>${view.installPrompt ? button('install',t('install'),'download',false,'button-primary') : ''}</div><div class="detail-block"><h3>${esc(t('diagnostics'))}</h3>${kv(t('status'),esc(connectionLabel()))}${kv(t('lastSync'),esc(dateStr(view.lastSync)))}${button('refresh',t('refresh'),'refresh',view.offline || view.listLoading)}</div><div class="detail-block privacy-card">${icon('shield')}<h3>PRIVATE BY DESIGN</h3><p class="muted-text">${esc(t('privacy'))}</p></div></div></div>`;
 }
@@ -198,7 +221,7 @@ function render(options={}) {
  app.className = 'safar-shell';
  if (!view.authed && !demo) app.innerHTML = locked();
  else {
- const content = view.selected ? detail() : view.tab === 'home' ? home() : view.tab === 'orders' ? orderList() : view.tab === 'shipments' ? orderList(true) : view.tab === 'senders' ? senders() : settings();
+ const content = view.selected ? detail() : view.tab === 'home' ? home() : view.tab === 'orders' ? orderList() : view.tab === 'shipments' ? orderList(true) : view.tab === 'returns' ? returnScreen() : view.tab === 'senders' ? senders() : settings();
  app.innerHTML = `${sidebar()}<main class="workspace" id="mainContent">${topbar()}${demo ? `<div class="demo-banner"><strong>DEMO</strong><span>${esc(t('demoNotice'))}</span></div>` : ''}${view.offline ? `<div id="offlineBanner" class="offline-banner" role="status">${icon('wifi')}<div><strong>${esc(t('offline'))}</strong><span>${esc(t('offlineHint'))}</span></div></div>` : ''}${view.scopes.length > 1 && view.tab !== 'settings' && !view.selected ? `<div class="scope-strip">${scopeControl()}</div>` : ''}${content}<footer class="footer-note"><span>SAFAR · SHIPPING OPERATIONS OS</span><span>${esc(t('lastSync'))} ${esc(dateStr(view.lastSync))}</span></footer></main>${bottom()}`;
  }
  if (preserve) { const target = document.getElementById(focused.id); if (target) { target.focus({preventScroll:true}); if (typeof start === 'number') { try { target.setSelectionRange(start,end); } catch (_) {} } } }
@@ -208,12 +231,12 @@ function messageFor(status) { return t(status === 401 ? 'expired' : status === 4
 function clearSession(message='') {
  sessionEpoch++; pairSequence++; clearTimeout(pairingTimer); clearTimeout(searchTimer); clearTimeout(expiryTimer); view.saving = false;
  view.listLoading = false; view.moreLoading = false; view.detailLoading = false; view.trackingLoading = false; view.sendersLoading = false; view.analyticsLoading = false; view.error = ''; view.detailError = ''; view.trackingError = ''; view.sendersError = ''; view.analyticsError = '';
- view.authed = false; view.csrf = ''; view.expiresAt = null; view.orders = []; view.counts = {}; view.detailCache = {}; view.tracking = {}; view.selected = null; view.editDraft = null; view.editing = false; view.senders = null; view.analytics = null; view.lastSync = null; view.scopes = []; view.chatId = null; view.loading = false; view.pair = null; view.pairBusy = false; view.pairError = message; closeDialog(); for (const dialog of document.querySelectorAll('dialog')) { dialog.replaceChildren(); dialog.correction = null; } view.photoErrors.clear(); view.photoAttempts = {}; listController?.abort(); requestSequence++; render();
+ view.authed = false; view.carrierEvents = {}; view.autoIntakeEnabled = false; view.mediaIntakeEnabled = false; view.ocrEnabled = false; view.returnCases = []; view.returnTracking = {}; view.returnTrackingErrors = {}; view.returnTrackingBusy = {}; view.returnsError = ''; view.csrf = ''; view.expiresAt = null; view.orders = []; view.counts = {}; view.detailCache = {}; view.tracking = {}; view.radarErrors = {}; view.radarLoading = false; view.selected = null; view.editDraft = null; view.editing = false; view.senders = null; view.analytics = null; view.lastSync = null; view.scopes = []; view.chatId = null; view.loading = false; view.pair = null; view.pairBusy = false; view.pairError = message; closeDialog(); for (const dialog of document.querySelectorAll('dialog')) { dialog.replaceChildren(); dialog.correction = null; } view.photoErrors.clear(); view.photoAttempts = {}; listController?.abort(); requestSequence++; render();
 }
 async function jsonRequest(url,options={}) {
  if (!navigator.onLine || view.offline) { const error = new Error(t('networkError')); error.status = 0; throw error; }
  const headers = {...options.headers};
- if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+ if (options.body !== undefined && !(options.body instanceof FormData)) headers['Content-Type'] = 'application/json';
  if (options.method && !['GET','HEAD'].includes(options.method) && view.csrf) headers['X-CSRF-Token'] = view.csrf;
  let response;
  try { response = await fetch(url,{credentials:'same-origin',cache:'no-store',redirect:'error',...options,headers}); }
@@ -256,10 +279,21 @@ async function fetchOrders(append=false) {
  } catch (error) { if (error.name !== 'AbortError' && sequence === requestSequence) view.error = error.message; }
  finally { if (sequence === requestSequence) { view.listLoading = false; view.moreLoading = false; if (['home','orders','shipments'].includes(view.tab) && !view.selected) render(); } }
 }
+async function fetchCarrierEvents(id) {
+ const epoch=sessionEpoch,chat=view.chatId;
+ if(demo || view.offline) return;
+ try {
+  const data=await jsonRequest(scopedURL('/api/safar/orders/'+encodeURIComponent(id)+'/carrier-events'));
+  if(epoch===sessionEpoch && chat===view.chatId && view.selected===id) {
+   view.carrierEvents[id]=data;
+   render();
+  }
+ } catch (_) { /* Historical migration may not yet exist; live tracking remains available. */ }
+}
 async function fetchDetail(id) {
  const epoch = sessionEpoch;
  view.detailLoading = true; view.detailError = ''; render();
- try { const data = demo ? {order:demoOrders.find(o => o.id === id)} : await jsonRequest(scopedURL('/api/safar/orders/' + encodeURIComponent(id))); if (epoch === sessionEpoch && view.selected === id) { view.detailCache[id] = data.order; view.detailError = ''; } }
+ try { const data = demo ? {order:demoOrders.find(o => o.id === id)} : await jsonRequest(scopedURL('/api/safar/orders/' + encodeURIComponent(id))); if (epoch === sessionEpoch && view.selected === id) { view.detailCache[id] = data.order; view.detailError = ''; if(data.order?.ttn) fetchCarrierEvents(id); } }
  catch (error) { if (epoch === sessionEpoch && view.selected === id) view.detailError = error.message; }
  finally { if (epoch === sessionEpoch && view.selected === id) { view.detailLoading = false; render(); } }
 }
@@ -279,7 +313,7 @@ async function fetchAnalytics() {
  } catch (error) { if (epoch === sessionEpoch) view.analyticsError = error.message; }
  finally { if (epoch === sessionEpoch) { view.analyticsLoading = false; if ((view.authed || demo) && view.tab === 'home' && !view.selected) render(); } }
 }
-function applySession(data) { view.authed = true; view.csrf = data.csrf_token || ''; view.expiresAt = data.expires_at; view.chatId = data.chat_id ?? null; view.loading = false; view.pair = null; view.pairError = ''; clearTimeout(pairingTimer); clearTimeout(expiryTimer); const remaining = Number(data.expires_at) * 1000 - Date.now(); if (Number.isFinite(remaining)) expiryTimer = setTimeout(() => clearSession(t('expired')),Math.max(0,remaining)); }
+function applySession(data) { view.autoIntakeEnabled = data.auto_intake_enabled === true; view.mediaIntakeEnabled = data.media_intake_enabled === true; view.ocrEnabled = data.ocr_enabled === true; view.authed = true; view.csrf = data.csrf_token || ''; view.expiresAt = data.expires_at; view.chatId = data.chat_id ?? null; view.loading = false; view.pair = null; view.pairError = ''; clearTimeout(pairingTimer); clearTimeout(expiryTimer); const remaining = Number(data.expires_at) * 1000 - Date.now(); if (Number.isFinite(remaining)) expiryTimer = setTimeout(() => clearSession(t('expired')),Math.max(0,remaining)); }
 async function loadWorkspace() {
  const epoch = sessionEpoch;
  if (!demo) { try { const data = await jsonRequest('/api/safar/scopes'); if (epoch !== sessionEpoch) return; view.scopes = data.scopes || []; view.chatId = data.selected_chat_id ?? view.chatId; } catch (error) { if (epoch !== sessionEpoch || !view.authed) return; } }
@@ -342,6 +376,135 @@ async function saveCorrection() {
  } catch (error) { const region = document.getElementById('correctionError'); if (region) region.textContent = error.message; if (error.status === 409) { view.detailError = error.message; } }
  finally { view.saving = false; for (const button of dialog.querySelectorAll('button')) button.disabled = false; }
 }
+function openReturnDialog() {
+ const dialog = document.getElementById("actionDialog");
+ const reasonOptions = [["refused_by_recipient",language==="ru"?"Отказ получателя":"Відмова одержувача"],["unclaimed",language==="ru"?"Не забрали":"Не забрали"],["easy_return_after_delivery",language==="ru"?"Лёгкий возврат":"Легке повернення"],["customer_exchange",language==="ru"?"Обмен":"Обмін"],["other",language==="ru"?"Другое":"Інше"]];
+ dialog.innerHTML = `<div class="dialog-top"><div><div class="eyebrow">SAFAR / RETURN CONTROL</div><h2 id="actionTitle">${esc(t("returnNew"))}</h2></div>${button("close-dialog",t("close"),"close")}</div><p class="muted-text">${esc(t("returnHelp"))}</p><form id="returnForm"><label for="returnReason">${esc(t("returnReason"))}</label><select id="returnReason" name="reason">${reasonOptions.map(([key,label])=>`<option value="${key}">${esc(label)}</option>`).join("")}</select><div id="returnError" class="form-error" role="alert"></div><div class="form-actions"><button class="button-primary" type="submit">${icon("refresh")}${esc(t("returnNew"))}</button>${button("close-dialog",t("cancel"),"close")}</div></form>`;
+ openDialog(dialog);
+}
+async function createReturnCase() {
+ if (view.saving || demo || !view.selected) return;
+ const dialog=document.getElementById("actionDialog"), errorBox=document.getElementById("returnError");
+ const reason=document.getElementById("returnReason")?.value;
+ const epoch=sessionEpoch;
+ view.saving=true; for(const button of dialog.querySelectorAll("button")) button.disabled=true;
+ try {
+  const data=await jsonRequest("/api/safar/returns",{method:"POST",body:JSON.stringify({order_id:view.selected,reason,chat_id:view.chatId})});
+  if (epoch !== sessionEpoch) return;
+  view.saving=false; closeDialog(); view.selected=null; view.tab="returns"; toast(t("returnSaved")); await fetchReturns();
+ } catch(error){if(epoch===sessionEpoch && errorBox) errorBox.textContent=error.message;}
+ finally {view.saving=false; for(const button of dialog.querySelectorAll("button")) button.disabled=false;}
+}
+function openIntake() {
+ const dialog = document.getElementById("actionDialog");
+ if (!window.crypto?.randomUUID) { toast(t("networkError")); return; }
+ dialog.intakeRequestId = window.crypto.randomUUID().replace(/-/g,"");
+ const available = !demo && view.authed && view.autoIntakeEnabled && !view.offline;
+ dialog.innerHTML = `<div class="dialog-top"><div><div class="eyebrow">SAFAR / SMART INTAKE</div><h2 id="actionTitle">${esc(t("intakeTitle"))}</h2></div>${button("close-dialog",t("close"),"close",false,"icon-button")}</div><p class="muted-text">${esc(t("intakeHelp"))}</p><form id="intakeForm" autocomplete="off"><label for="intakeText">${esc(t("intakeSource"))}</label><textarea id="intakeText" name="source" rows="9" maxlength="8000" placeholder="${esc(t("intakeSource"))}" ${available ? "" : "disabled"}></textarea><p class="muted-text intake-hint">${view.mediaIntakeEnabled ? esc(language==="ru"?"Фото сохраняется в вашем личном чате Telegram-бота SAFAR. Максимум 2 МБ (JPG/PNG). Для скриншота без текста требуется включённый OCR.":"Фото зберігається у вашому особистому чаті Telegram-бота SAFAR. До 2 МБ (JPG/PNG). Для скриншота без тексту потрібен увімкнений OCR.") : esc(t("intakeImagesLater"))}</p>${view.mediaIntakeEnabled ? `<label for="intakeImage">${esc(language==="ru"?"Фото товара или скриншот (необязательно)":"Фото товару або скриншот (необов’язково)")}</label><input id="intakeImage" type="file" name="image" accept="image/jpeg,image/png" ${available?"":"disabled"}>`:""}${available ? "" : `<div class="notice">${icon("shield")}${esc(demo ? t("demoNotice") : t("intakeDisabled"))}</div>`}<div id="intakeError" class="form-error" role="alert"></div><div class="form-actions"><button type="submit" class="button-primary" ${available ? "" : "disabled"}>${icon("orders")}${esc(t("intakeSubmit"))}</button>${button("close-dialog",t("cancel"),"close")}</div></form>`;
+ openDialog(dialog); document.getElementById("intakeText")?.focus({preventScroll:true});
+}
+async function submitIntake() {
+ const dialog=document.getElementById("actionDialog"), input=document.getElementById("intakeText");
+ const errorBox=document.getElementById("intakeError"), rawText=input?.value || "";
+ const image=document.getElementById("intakeImage")?.files?.[0];
+ if (!rawText.trim() && !image) { if(errorBox) errorBox.textContent=t("intakeEmpty"); return; }
+ if (image && (!view.mediaIntakeEnabled || !["image/png","image/jpeg"].includes(image.type) || image.size>2*1024*1024)) {
+  if(errorBox) errorBox.textContent=t("validation"); return;
+ }
+ if(image && !rawText.trim() && !view.ocrEnabled) {
+  if(errorBox) errorBox.textContent=language==="ru"?"Для фото без подписи требуется OCR. Добавьте текст заказа.":"Для фото без підпису потрібен OCR. Додайте текст замовлення.";return;
+ }
+ if (view.saving || !view.autoIntakeEnabled || demo || view.offline) return;
+ const epoch=sessionEpoch;
+ view.saving=true; for(const el of dialog.querySelectorAll("button")) el.disabled=true;
+ try {
+  const body=image?new FormData():null;
+  if(body) {body.set("text",rawText);body.set("request_id",dialog.intakeRequestId);body.set("chat_id",String(view.chatId));body.set("image",image,image.name);}
+  const data=await jsonRequest(image?"/api/safar/orders/intake/photo":"/api/safar/orders/intake",
+   {method:"POST",body:body||JSON.stringify({text:rawText,request_id:dialog.intakeRequestId,chat_id:view.chatId})});
+  if(epoch!==sessionEpoch) return;
+  view.saving=false; closeDialog(); toast(t(data.accepted ? "intakeQueued" : "intakeExisting"));
+  view.selected=null; view.tab="orders"; view.search=""; view.filter="all"; view.orders=[];
+  await fetchOrders();
+ } catch(error) { if(epoch===sessionEpoch && errorBox) errorBox.textContent=error.message; }
+ finally { view.saving=false; for(const el of dialog.querySelectorAll("button")) el.disabled=false; }
+}
+function openEasyReturnLink(id) {
+ const c=view.returnCases.find(x=>x.id===id);
+ if (!c || c.reason!=="easy_return_after_delivery" || c.reverse_ttn) return;
+ const dialog=document.getElementById("actionDialog");
+ dialog.linkCaseId=id;
+ const heading=language==="ru"?"Связать обратную ТТН":"Пов’язати зворотну ТТН";
+ const hint=language==="ru"?"Номер будет привязан только при подтверждении связи исходной ТТН через API Новой Почты. Никакой новой отправки не создаётся.":"Номер буде пов’язано лише після підтвердження зв’язку через API Нової пошти. Нове відправлення не створюється.";
+ dialog.innerHTML=`<div class="dialog-top"><div><div class="eyebrow">EASY RETURN / VERIFIED</div><h2 id="actionTitle">${esc(heading)}</h2></div>${button("close-dialog",t("close"),"close",false,"icon-button")}</div><p class="muted-text">${esc(hint)}</p><form id="easyReturnLinkForm"><label for="reverseTtn">${esc(t("waybill"))}</label><input id="reverseTtn" name="reverse_ttn" inputmode="numeric" autocomplete="off" maxlength="14" pattern="[0-9]{14}" required placeholder="20400000000000"><div id="easyReturnLinkError" role="alert" class="form-error"></div><div class="form-actions"><button class="button-primary" type="submit">${icon("check")}${esc(heading)}</button>${button("close-dialog",t("cancel"),"close")}</div></form>`;
+ openDialog(dialog); document.getElementById("reverseTtn")?.focus({preventScroll:true});
+}
+async function submitEasyReturnLink() {
+ const dialog=document.getElementById("actionDialog"), id=dialog.linkCaseId;
+ const input=document.getElementById("reverseTtn"), err=document.getElementById("easyReturnLinkError");
+ if(!id || !input || !/^[0-9]{14}$/.test(input.value)) {if(err)err.textContent=t("validation");return;}
+ const epoch=sessionEpoch; view.saving=true;
+ for(const control of dialog.querySelectorAll("button")) control.disabled=true;
+ try {
+  const result=await jsonRequest("/api/safar/returns/"+encodeURIComponent(id)+"/link-easy-return",{method:"POST",body:JSON.stringify({reverse_ttn:input.value,chat_id:view.chatId})});
+  if(epoch!==sessionEpoch) return;
+  view.saving=false; view.returnCases=view.returnCases.map(c=>c.id===id?result.case:c);
+  closeDialog(); render(); toast(language==="ru"?"Связь подтверждена Новой Почтой":"Зв’язок підтверджено Новою поштою");
+ } catch(error) {if(epoch===sessionEpoch&&err)err.textContent=error.message;}
+ finally {view.saving=false;for(const control of dialog.querySelectorAll("button"))control.disabled=false;}
+}
+function openWarehouseReceipt(id) {
+ const c=view.returnCases.find(x=>x.id===id);
+ if(!c || c.warehouse_state==="received" || demo || view.offline) return;
+ const dialog=document.getElementById("actionDialog");
+ dialog.warehouseCaseId=id;
+ const titleText=language==="ru"?"Подтвердить физическое получение":"Підтвердити фактичне отримання";
+ const hint=language==="ru"?"Только после фактической приёмки посылки на вашем складе. Впишите номер исходной или проверенной обратной ТТН. Действие будет записано в журнале, финансы не изменятся.":"Тільки після фактичного приймання посилки на складі. Введіть номер початкової або підтвердженої зворотної ТТН. Дія буде записана в журналі, фінанси не зміняться.";
+ const checkedLabel=language==="ru"?"Подтверждаю, что посылка физически получена":"Підтверджую фактичне отримання посилки";
+ dialog.innerHTML=`<div class="dialog-top"><div><div class="eyebrow">SAFAR / WAREHOUSE AUDIT</div><h2 id="actionTitle">${esc(titleText)}</h2></div>${button("close-dialog",t("close"),"close",false,"icon-button")}</div><p class="muted-text">${esc(hint)}</p><form id="warehouseReceiptForm"><label for="warehouseTtn">${esc(t("waybill"))} · ${esc(c.outbound_ttn)}${c.reverse_ttn?` / ${esc(c.reverse_ttn)}`:""}</label><input id="warehouseTtn" inputmode="numeric" required autocomplete="off" maxlength="14" pattern="[0-9]{14}" placeholder="20400000000000"><label class="warehouse-check"><input id="warehouseAcknowledged" type="checkbox" required><span>${esc(checkedLabel)}</span></label><div class="form-error" role="alert" id="warehouseReceiptError"></div><div class="form-actions"><button type="submit" class="button-primary">${icon("check")}${esc(titleText)}</button>${button("close-dialog",t("cancel"),"close")}</div></form>`;
+ openDialog(dialog); document.getElementById("warehouseTtn")?.focus({preventScroll:true});
+}
+async function submitWarehouseReceipt() {
+ const dialog=document.getElementById("actionDialog"),id=dialog.warehouseCaseId;
+ const ttn=document.getElementById("warehouseTtn")?.value || "";
+ const acknowledged=document.getElementById("warehouseAcknowledged")?.checked === true;
+ const error=document.getElementById("warehouseReceiptError");
+ if(!id || !/^[0-9]{14}$/.test(ttn) || !acknowledged) {if(error)error.textContent=t("validation");return;}
+ const epoch=sessionEpoch; view.saving=true;
+ for(const b of dialog.querySelectorAll("button")) b.disabled=true;
+ try {
+  const result=await jsonRequest("/api/safar/returns/"+encodeURIComponent(id)+"/warehouse-receipt",{method:"POST",body:JSON.stringify({chat_id:view.chatId,ttn,physically_received:true})});
+  if(epoch!==sessionEpoch) return;
+  view.saving=false;view.returnCases=view.returnCases.map(c=>c.id===id?result.case:c);
+  closeDialog();render();toast(language==="ru"?"Получение записано в журнал":"Отримання записано до журналу");
+ } catch(e) {if(epoch===sessionEpoch && error)error.textContent=e.message;}
+ finally {view.saving=false;for(const b of dialog.querySelectorAll("button"))b.disabled=false;}
+}
+function openReturnExpense(id) {
+ const c=view.returnCases.find(x=>x.id===id);if(!c||demo||view.offline||!window.crypto?.randomUUID)return;
+ const dialog=document.getElementById("actionDialog");
+ dialog.expenseCaseId=id;dialog.expenseRequestId=window.crypto.randomUUID().replace(/-/g,"");
+ const titleText=language==="ru"?"Учесть расход по возврату":"Облік витрат на повернення";
+ const help=language==="ru"?"Введите точную сумму по квитанции. Запись отражает сообщение оператора и не подтверждает банковское списание.":"Вкажіть точну суму за квитанцією. Запис відображає повідомлення оператора, але не підтверджує банківське списання.";
+ const check=language==="ru"?"Подтверждаю сумму и наличие основания":"Підтверджую суму та наявність підтвердження";
+ const categories=[["return_delivery",language==="ru"?"Обратная доставка":"Зворотна доставка"],["storage",language==="ru"?"Хранение":"Зберігання"],["other",language==="ru"?"Другие расходы":"Інші витрати"]];
+ dialog.innerHTML=`<div class="dialog-top"><div><div class="eyebrow">SAFAR / COST AUDIT</div><h2 id="actionTitle">${esc(titleText)}</h2></div>${button("close-dialog",t("close"),"close",false,"icon-button")}</div><p class="muted-text">${esc(help)}</p><form id="returnExpenseForm"><label for="returnExpenseAmount">${esc(language==="ru"?"Сумма, грн":"Сума, грн")}</label><input id="returnExpenseAmount" required type="text" inputmode="decimal" maxlength="9" placeholder="120.50"><label for="returnExpenseCategory">${esc(language==="ru"?"Категория":"Категорія")}</label><select id="returnExpenseCategory">${categories.map(([key,label])=>`<option value="${key}">${esc(label)}</option>`).join("")}</select><label for="returnExpenseRef">${esc(language==="ru"?"Номер чека или основание":"Номер чека чи підстава")}</label><input id="returnExpenseRef" required maxlength="120" placeholder="Receipt №"><label class="warehouse-check"><input type="checkbox" required id="returnExpenseAck"><span>${esc(check)}</span></label><div id="returnExpenseError" class="form-error" role="alert"></div><div class="form-actions"><button class="button-primary" type="submit">${icon("check")}${esc(titleText)}</button>${button("close-dialog",t("cancel"),"close")}</div></form>`;
+ openDialog(dialog);document.getElementById("returnExpenseAmount")?.focus({preventScroll:true});
+}
+async function submitReturnExpense() {
+ const dialog=document.getElementById("actionDialog"),id=dialog.expenseCaseId;
+ const error=document.getElementById("returnExpenseError");
+ const amount=document.getElementById("returnExpenseAmount")?.value?.trim(), category=document.getElementById("returnExpenseCategory")?.value,reference=document.getElementById("returnExpenseRef")?.value,acknowledged=document.getElementById("returnExpenseAck")?.checked===true;
+ if (!id || !/^(?:0|[1-9][0-9]{0,5})(?:\.[0-9]{1,2})?$/.test(amount||"") || !acknowledged || (reference||"").trim().length<3){if(error)error.textContent=t("validation");return;}
+ if(view.saving||demo||view.offline)return;
+ const epoch=sessionEpoch;view.saving=true;for(const b of dialog.querySelectorAll("button"))b.disabled=true;
+ try {
+  const result=await jsonRequest("/api/safar/returns/"+encodeURIComponent(id)+"/expense",{method:"POST",body:JSON.stringify({chat_id:view.chatId,amount,category,reference,request_id:dialog.expenseRequestId,acknowledged:true})});
+  if(epoch!==sessionEpoch)return;
+  view.saving=false;view.returnCases=view.returnCases.map(c=>c.id===id?result.case:c);closeDialog();render();toast(language==="ru"?"Расход сохранён с основанием":"Витрати збережено з підтвердженням");
+ } catch(e){if(epoch===sessionEpoch&&error)error.textContent=e.message;}
+ finally {view.saving=false;for(const b of dialog.querySelectorAll("button"))b.disabled=false;}
+}
 let dialogReturnFocus = null;
 function openDialog(dialog) { dialogReturnFocus = document.activeElement; if (!dialog.open) dialog.showModal(); document.body.classList.add('dialog-open'); }
 function closeDialog() { if (view.saving) return; for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close(); view.photo = null; document.body.classList.remove('dialog-open'); if (dialogReturnFocus?.isConnected) dialogReturnFocus.focus({preventScroll:true}); dialogReturnFocus = null; }
@@ -360,16 +523,58 @@ async function fetchTracking() {
  catch (error) { if (epoch === sessionEpoch && view.selected === id) view.trackingError = error.message; }
  finally { if (epoch === sessionEpoch) { view.trackingLoading = false; if (view.selected === id) render(); } }
 }
+async function fetchShipmentRadar() {
+ if (view.tab !== "shipments" || view.radarLoading || view.offline) return;
+ const epoch=sessionEpoch, chatId=view.chatId;
+ const orders=view.orders.filter(o=>o.ttn && /^\d{14}$/.test(o.ttn)).slice(0,3);
+ if(!orders.length) return;
+ view.radarLoading=true; render();
+ try {
+  await Promise.allSettled(orders.map(async o=>{
+   try {
+    if (demo) return;
+    const result=await jsonRequest(scopedURL("/api/safar/orders/" + encodeURIComponent(o.id) + "/tracking"));
+    if(epoch===sessionEpoch && chatId===view.chatId) { view.tracking[o.id]=result; delete view.radarErrors[o.id]; }
+   } catch(error) { if(epoch===sessionEpoch && chatId===view.chatId) view.radarErrors[o.id]=error.message; }
+  }));
+ } finally {if(epoch===sessionEpoch && chatId===view.chatId) {view.radarLoading=false; if(view.tab==="shipments" && !view.selected) render();}}
+}
 async function switchTab(tab) {
  if (!tabs.some(t => t[0] === tab)) return;
  const old = view.tab; view.tab = tab; view.selected = null; view.editing = false; view.editDraft = null; view.detailError = ''; closeDialog();
  if (old !== tab && ['home','orders','shipments'].includes(tab)) { view.filter = 'all'; view.search = ''; view.sender = ''; view.period = 'all'; view.sort = 'updated_desc'; view.orders = []; view.pagination = {}; }
  window.scrollTo({top:0,behavior:'instant'}); render({preserve:false}); document.querySelector('h1')?.focus({preventScroll:true});
  if (['home','orders','shipments'].includes(tab)) await fetchOrders();
+ if (tab === 'shipments') await fetchShipmentRadar();
  if (tab === 'home') await fetchAnalytics();
  if (tab === 'senders') await fetchSenders();
+ if (tab === 'returns') { await fetchReturns(); await refreshReturnTracking(); }
 }
-async function refreshCurrent() { if (view.selected) return fetchDetail(view.selected); if (view.tab === 'senders') return fetchSenders(); const tasks = [fetchOrders()]; if (view.tab === 'home') tasks.push(fetchAnalytics()); await Promise.allSettled(tasks); }
+async function fetchReturns() {
+ const epoch=sessionEpoch;
+ view.returnsLoading=true; view.returnsError=''; render();
+ try { const data=demo ? {cases:[]} : await jsonRequest(scopedURL('/api/safar/returns')); if (epoch === sessionEpoch) view.returnCases=data.cases || []; }
+ catch (error) { if (epoch === sessionEpoch) view.returnsError=error.message; }
+ finally { if (epoch === sessionEpoch) { view.returnsLoading=false; render(); } }
+}
+async function fetchReturnTracking(id) {
+ if (!id || view.returnTrackingBusy[id]) return;
+ const epoch=sessionEpoch;
+ view.returnTrackingBusy[id]=true; delete view.returnTrackingErrors[id]; render();
+ try {
+  const data=await jsonRequest(scopedURL("/api/safar/returns/" + encodeURIComponent(id) + "/tracking"));
+  if(epoch===sessionEpoch) view.returnTracking[id]=data.tracking;
+ } catch(error) { if(epoch===sessionEpoch) view.returnTrackingErrors[id]=error.message; }
+ finally { if(epoch===sessionEpoch) { delete view.returnTrackingBusy[id]; render(); } }
+}
+async function refreshReturnTracking() {
+ if (view.offline || view.tab !== "returns" || demo) return;
+ const now=Date.now()/1000;
+ const cases=view.returnCases.filter(c=>!view.returnTrackingBusy[c.id]
+   && now - (Number(view.returnTracking[c.id]?.checked_at)||0) > 180).slice(0,2);
+ await Promise.allSettled(cases.map(c=>fetchReturnTracking(c.id)));
+}
+async function refreshCurrent() { if (view.selected) return fetchDetail(view.selected); if (view.tab === 'senders') return fetchSenders(); if (view.tab === 'returns') { await fetchReturns(); return refreshReturnTracking(); } if (view.tab === 'shipments') {await fetchOrders(); return fetchShipmentRadar();} const tasks = [fetchOrders()]; if (view.tab === 'home') tasks.push(fetchAnalytics()); await Promise.allSettled(tasks); }
 async function logout() {
  try { await jsonRequest('/api/safar/logout',{method:'POST',body:'{}'}); sessionChannel?.postMessage('logout'); clearSession(); toast(t('loggedOut')); }
  catch (error) { toast(error.message); }
@@ -383,6 +588,15 @@ async function reconnect() {
   view.offline = false; await boot();
  } catch (_) { view.offline = true; view.loading = false; view.pairError = t('networkError'); render(); }
 }
+// Foreground-only refresh: this is not a 24/7 scheduler or background tracking service.
+// Cap provider calls and rely on the server cache. Never store private data on disk.
+setInterval(() => {
+ if (demo || document.hidden || !navigator.onLine || view.offline || !view.authed
+     || view.selected || view.saving || view.listLoading || view.returnsLoading) return;
+ if (view.tab === "shipments") fetchShipmentRadar();
+ else if (view.tab === "returns") fetchReturns().then(refreshReturnTracking);
+ else if (view.tab === "home" || view.tab === "orders") fetchOrders();
+}, 120000);
 document.addEventListener('click',async event => {
  const control = event.target.closest('[data-tab],[data-filter],[data-order],[data-action],[data-language],[data-photo]');
  if (!control || control.disabled) return;
@@ -392,10 +606,18 @@ document.addEventListener('click',async event => {
  if (control.dataset.order) { view.returnTab = view.tab === 'shipments' ? 'shipments' : 'orders'; view.selected = control.dataset.order; view.editing = false; view.editDraft = null; view.trackingError = ''; window.scrollTo({top:0,behavior:'instant'}); await fetchDetail(view.selected); document.querySelector('h1')?.focus({preventScroll:true}); return; }
  if (control.dataset.photo !== undefined) { showPhoto(Number(control.dataset.photo)); return; }
  const action = control.dataset.action;
+ if (action === 'open-intake') return openIntake();
  if (action === 'reconnect') return reconnect();
  if (action === 'refresh') return refreshCurrent();
  if (action === 'refresh-analytics') return fetchAnalytics();
  if (action === 'refresh-senders') return fetchSenders();
+ if (action === 'radar-refresh') return fetchShipmentRadar();
+ if (action === 'refresh-returns') return fetchReturns();
+ if (action === 'track-return') return fetchReturnTracking(control.dataset.caseId);
+ if (action === 'open-easy-link') return openEasyReturnLink(control.dataset.caseId);
+ if (action === 'open-expense') return openReturnExpense(control.dataset.caseId);
+ if (action === 'open-warehouse') return openWarehouseReceipt(control.dataset.caseId);
+ if (action === 'open-return') return openReturnDialog();
  if (action === 'load-more') return fetchOrders(true);
  if (action === 'clear-filters') { view.search = ''; view.filter = 'all'; view.sender = ''; view.period = 'all'; return fetchOrders(); }
  if (action === 'detail-retry') return fetchDetail(view.selected);
@@ -422,7 +644,7 @@ document.addEventListener('click',async event => {
  if (action === 'pair-cancel') { pairSequence++; clearTimeout(pairingTimer); view.pair = null; view.pairBusy = false; view.pairError = ''; render(); return; }
  if (action === 'install' && view.installPrompt) { const prompt = view.installPrompt; view.installPrompt = null; await prompt.prompt(); render(); }
 });
-document.addEventListener('submit',event => { if (event.target.id === 'correctionForm') { event.preventDefault(); reviewCorrection(); } });
+document.addEventListener('submit',event => { if (event.target.id === 'correctionForm') { event.preventDefault(); reviewCorrection(); } else if (event.target.id === 'returnForm') { event.preventDefault(); createReturnCase(); } else if (event.target.id === 'intakeForm') { event.preventDefault(); submitIntake(); } else if (event.target.id === 'easyReturnLinkForm') { event.preventDefault(); submitEasyReturnLink(); } else if (event.target.id === 'warehouseReceiptForm') { event.preventDefault(); submitWarehouseReceipt(); } else if (event.target.id === 'returnExpenseForm') { event.preventDefault(); submitReturnExpense(); } });
 document.addEventListener('input',event => {
  if (event.target.id === 'orderSearch') { view.search = event.target.value; clearTimeout(searchTimer); searchTimer = setTimeout(() => { view.orders = []; fetchOrders(); },300); }
  if (event.target.closest('#correctionForm')) { if (view.editDraft) view.editDraft[event.target.name] = event.target.value; }
@@ -431,7 +653,7 @@ document.addEventListener('change',async event => {
  if (event.target.id === 'senderFilter') view.sender = event.target.value;
  else if (event.target.id === 'dateFilter') view.period = event.target.value;
  else if (event.target.id === 'sortFilter') view.sort = event.target.value;
- else if (event.target.id === 'scopeFilter') { sessionEpoch++; view.chatId = Number(event.target.value); view.orders = []; view.detailCache = {}; view.tracking = {}; view.senders = null; view.analytics = null; view.selected = null; view.lastSync = null; await Promise.allSettled([fetchOrders(),fetchSenders(),fetchAnalytics()]); return; }
+ else if (event.target.id === 'scopeFilter') { sessionEpoch++; view.chatId = Number(event.target.value); view.orders = []; view.detailCache = {}; view.tracking = {}; view.carrierEvents = {}; view.radarErrors = {}; view.senders = null; view.analytics = null; view.returnCases = []; view.returnTracking = {}; view.returnTrackingErrors = {}; view.selected = null; view.lastSync = null; await Promise.allSettled([fetchOrders(),fetchSenders(),fetchAnalytics()]); return; }
  else return;
  view.orders = []; await fetchOrders();
 });

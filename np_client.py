@@ -6,6 +6,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import requests
+from urllib.parse import quote
 from requests.exceptions import RequestException
 
 logger = logging.getLogger(__name__)
@@ -192,6 +193,50 @@ class NovaPoshtaClient:
     def ping(self):
         rows = self._call("Address", "getCities", {"FindByString": "Одеса", "Limit": "1", "Page": "1"})
         return bool(rows)
+
+    def fetch_ttn_pdf(self, ttn: str, *, doc_ref: str = "") -> bytes:
+        """Fetch an existing NP express-waybill PDF privately.
+
+        The carrier API key appears only in the server-to-carrier HTTPS request.
+        The caller MUST first prove ownership of the issued TTN and sender.
+        Disable this integration until verified with the sender account.
+        """
+        number = str(ttn or "").strip()
+        if not re.fullmatch(r"\d{14}", number):
+            raise NovaPoshtaError("Invalid issued TTN")
+        if doc_ref and not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", str(doc_ref)):
+            raise NovaPoshtaError("Invalid carrier document reference")
+        document = str(doc_ref or number)
+        url = ("https://my.novaposhta.ua/orders/printDocument/orders[]/"
+               + quote(document, safe="") + "/type/pdf/apiKey/"
+               + quote(self.api_key, safe=""))
+        max_bytes = 6 * 1024 * 1024
+        try:
+            with requests.get(url, timeout=(5, 12), stream=True, allow_redirects=False) as response:
+                if response.status_code != 200:
+                    raise NovaPoshtaTemporaryError("PDF unavailable from Nova Poshta")
+                mime = str(response.headers.get("Content-Type", "")).split(";", 1)[0].strip().lower()
+                if mime not in {"application/pdf", "application/octet-stream"}:
+                    raise NovaPoshtaTemporaryError("Carrier did not return a PDF")
+                try:
+                    length = int(response.headers.get("Content-Length") or "0")
+                except (TypeError, ValueError):
+                    raise NovaPoshtaTemporaryError("Invalid carrier PDF length")
+                if length < 0 or length > max_bytes:
+                    raise NovaPoshtaTemporaryError("Carrier PDF exceeds size limit")
+                payload = bytearray()
+                for chunk in response.iter_content(chunk_size=65536):
+                    if not chunk:
+                        continue
+                    payload.extend(chunk)
+                    if len(payload) > max_bytes:
+                        raise NovaPoshtaTemporaryError("Carrier PDF exceeds size limit")
+                if not payload.startswith(b"%PDF-"):
+                    raise NovaPoshtaTemporaryError("Carrier PDF signature invalid")
+                return bytes(payload)
+        except requests.RequestException as exc:
+            # Do not log the request URL or exception: it includes the API key.
+            raise NovaPoshtaTemporaryError("Nova Poshta PDF temporarily unavailable") from None
 
     def get_ttn_status(self, ttn: str, *, phone: str = "") -> dict:
         """Read the status of one exact document without changing a shipment."""

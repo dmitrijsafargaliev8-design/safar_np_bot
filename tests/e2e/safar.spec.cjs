@@ -40,6 +40,44 @@ async function screenshot(page, filename) {
   await page.screenshot({ path: path.join(screenshots, filename), fullPage: false });
 }
 
+test('SAFAR CONTROL shows a safe intake gate, returns tab and verified carrier radar', async ({ page }) => {
+  await signIn(page);
+  await page.locator('[data-action="open-intake"]').first().click();
+  const dialog = page.locator('#actionDialog');
+  await expect(dialog.locator('#intakeText')).toBeDisabled();
+  await expect(dialog).toContainText('сховищ');
+  await dialog.locator('[data-action="close-dialog"]').first().click();
+
+  await tab(page, 'shipments');
+  await expect(page.locator('.radar-panel')).toBeVisible();
+  await expect(page.locator('.radar-row').first()).toBeVisible();
+  await expect(page.locator('.radar-panel')).toContainText('ТТН створено');
+
+  await tab(page, 'returns');
+  await expect(page.locator('main.workspace h1')).toContainText('Повернення');
+  await expect(page.locator('.return-case-list')).toHaveCount(0);
+  expect((await page.request.get('/api/safar/returns')).status()).toBe(200);
+});
+
+test('warehouse receipt requires physical confirmation and preserves finance', async ({ page }) => {
+  await signIn(page);
+  await page.locator('.order-row').first().click();
+  await page.locator('[data-action="open-return"]').click();
+  await page.locator('#returnReason').selectOption('refused_by_recipient');
+  await page.locator('#returnForm button[type="submit"]').click();
+  await expect(page.locator('.return-case-card')).toBeVisible();
+  // Synthetic local server remains alive across Playwright retries. An
+  // already-received return must remain idempotently completed.
+  if (await page.locator('[data-action="open-warehouse"]').count()) {
+    await page.locator('[data-action="open-warehouse"]').first().click();
+    await page.locator('#warehouseTtn').fill('20400000000001');
+    await page.locator('#warehouseAcknowledged').check();
+    await page.locator('#warehouseReceiptForm button[type="submit"]').click();
+  }
+  await expect(page.locator('.return-case-card')).toContainText('Прийнято на складі');
+  await expect(page.locator('.return-case-card')).toContainText('Фінанси не підтверджені');
+});
+
 test('guest access fails closed, forged Telegram auth never returns orders', async ({ page }) => {
   await page.goto('/safar');
   await expect(page.locator('[data-action="pair-start"]')).toBeVisible();
