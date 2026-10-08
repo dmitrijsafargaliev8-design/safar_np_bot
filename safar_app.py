@@ -6,6 +6,7 @@ validated proposals; the app never invokes shipment creation or deletion.
 from __future__ import annotations
 
 import io
+import logging
 import hashlib
 import hmac
 import math
