@@ -49,11 +49,24 @@ def _normalize_city_input(value: str):
     if not raw:
         return "", ""
 
-    # Реальные заказы часто приходят так:
-    # "м. Сміла, Черкаська обл" / "г. Одесса, Одесская обл."
-    parts = re.split(r"[,;]", raw, maxsplit=1)
-    city = parts[0].strip()
-    region_hint = parts[1].strip() if len(parts) > 1 else ""
+    # Keep the original order text, but search the directory by the city alone.
+    # Both "Киевская обл, Васильков" and "Васильков, Киевская обл" occur.
+    parts = [part.strip(" .,-") for part in re.split(r"[,;]", raw) if part.strip(" .,-")]
+    if len(parts) == 1:
+        leading_area = re.match(r"(?i)^(.+?\s+(?:область|обл\.?))\s+(.+)$", raw)
+        if leading_area:
+            parts = [leading_area.group(1), leading_area.group(2)]
+    areas = [part for part in parts if re.search(r"(?i)\s+(?:область|обл)$", part.rstrip(" ."))]
+    cities = [part for part in parts if part not in areas and not re.search(r"(?i)\s+(?:район|р-н)$", part.rstrip(" ."))]
+    if len(areas) > 1 or (areas and len(cities) != 1):
+        raise NovaPoshtaError("Уточни один город и одну область для этого заказа.")
+    if areas:
+        city, region_hint = cities[0], areas[0]
+    else:
+        city = parts[0] if parts else ""
+        region_hint = parts[1] if len(parts) == 2 else ""
+        if len(parts) > 2:
+            raise NovaPoshtaError("Уточни один город и одну область для этого заказа.")
 
     city = re.sub(
         r"(?i)^(?:м(?:істо)?|г(?:ород)?|с(?:ело)?|смт|пгт|селище|пос(?:елок)?)\.?\s+",
@@ -102,6 +115,7 @@ class NovaPoshtaClient:
         self.address_ref = os.getenv("NP_SENDER_ADDRESS_REF", "").strip()
         self.sender_city_ref = os.getenv("NP_SENDER_CITY_REF", "").strip()
         self.sender_phone = os.getenv("NP_SENDER_PHONE", "").strip()
+        self._area_rows = None
 
         if not self.api_key:
             raise NovaPoshtaError("NOVA_POSHTA_API_KEY не задан.")
@@ -147,27 +161,31 @@ class NovaPoshtaClient:
         rows = self._call("Address", "getCities", {"FindByString": "Одеса", "Limit": "1", "Page": "1"})
         return bool(rows)
 
-    def get_city_ref(self, city_name: str) -> str:
+    def _area_info(self, name):
+        if self._area_rows is None:
+            rows = self._call("Address", "getAreas", {})
+            if not rows:
+                raise NovaPoshtaTemporaryError("Новая Почта не вернула справочник областей. Заказ сохранён.")
+            self._area_rows = rows
+        wanted = _normalize_region_hint(name)
+        matches = [row for row in self._area_rows if wanted in {
+            _normalize_region_hint(row.get("Description")),
+            _normalize_region_hint(row.get("DescriptionRu")),
+        } and row.get("Ref")]
+        if len({row["Ref"] for row in matches}) != 1:
+            raise NovaPoshtaError(f"Область не найдена однозначно: {name}")
+        return matches[0]
+
+    def get_city_ref(self, city_name: str, *, area: str = "") -> str:
         raw_query = (city_name or "").strip()
         if not raw_query:
             raise NovaPoshtaError("Не указан город.")
 
         query, region_hint = _normalize_city_input(raw_query)
-        search_terms = [query]
-        if raw_query != query:
-            search_terms.append(raw_query)
-
-        rows = []
-        used_query = query
-        for term in search_terms:
-            rows = self._call(
-                "Address",
-                "getCities",
-                {"FindByString": term, "Limit": "50", "Page": "1"},
-            )
-            if rows:
-                used_query = term
-                break
+        rows = self._call(
+            "Address", "getCities",
+            {"FindByString": query, "Limit": "100", "Page": "1"},
+        )
 
         if not rows:
             raise NovaPoshtaError(f"Город не найден: {raw_query}")
@@ -176,36 +194,27 @@ class NovaPoshtaClient:
         exact = []
         for row in rows:
             candidates = {
-                _norm_text(row.get("Description")),
-                _norm_text(row.get("DescriptionRu")),
+                _norm_text(re.sub(r"\s*\([^)]*\)\s*$", "", row.get("Description") or "")),
+                _norm_text(re.sub(r"\s*\([^)]*\)\s*$", "", row.get("DescriptionRu") or "")),
             }
             if wanted in candidates:
                 exact.append(row)
 
-        matches = exact or rows
-
-        # Если одинаковое название встречается в разных областях,
-        # используем подсказку из строки "..., Черкаська обл".
-        region_wanted = _normalize_region_hint(region_hint)
-        if region_wanted and len({r.get("Ref") for r in matches if r.get("Ref")}) > 1:
-            regional = []
-            for row in matches:
-                region_candidates = [
-                    _norm_text(row.get("AreaDescription")),
-                    _norm_text(row.get("AreaDescriptionRu")),
-                    _norm_text(row.get("RegionDescription")),
-                    _norm_text(row.get("RegionDescriptionRu")),
-                ]
-                if any(
-                    region_wanted == candidate
-                    or region_wanted in candidate
-                    or candidate in region_wanted
-                    for candidate in region_candidates
-                    if candidate
-                ):
-                    regional.append(row)
-            if regional:
-                matches = regional
+        if not exact:
+            raise NovaPoshtaError(f"Город не найден точно: {raw_query}. Уточни название.")
+        matches = exact
+        area_hint = area or region_hint
+        if area_hint:
+            selected_area = self._area_info(area_hint)
+            if area and region_hint and self._area_info(region_hint)["Ref"] != selected_area["Ref"]:
+                raise NovaPoshtaError("В заказе указаны разные области. Уточни область получателя.")
+            area_names = {_normalize_region_hint(selected_area.get(key)) for key in ("Description", "DescriptionRu")}
+            area_names.discard("")
+            matches = [row for row in matches if row.get("Area") == selected_area["Ref"] or
+                       (not row.get("Area") and any(_normalize_region_hint(row.get(key)) in area_names
+                         for key in ("AreaDescription", "AreaDescriptionRu")))]
+            if not matches:
+                raise NovaPoshtaError(f"Город {query} не найден в области {area_hint}. Проверь область.")
 
         refs = {r.get("Ref") for r in matches if r.get("Ref")}
         if len(refs) != 1:
@@ -225,7 +234,7 @@ class NovaPoshtaClient:
                 + (f"Уточните: {hint}" if hint else "Уточните название.")
             )
 
-        if used_query != raw_query:
+        if query != raw_query or area_hint:
             logger.info(
                 "CITY_NORMALIZED raw=%r query=%r region_hint=%r",
                 raw_query,
@@ -246,7 +255,8 @@ class NovaPoshtaClient:
         if not raw_city:
             raise NovaPoshtaError("Не указан населённый пункт.")
 
-        query, _ = _normalize_city_input(raw_city)
+        query, inline_area = _normalize_city_input(raw_city)
+        area = area or inline_area
         rows = self._call(
             "Address",
             "searchSettlements",
@@ -295,13 +305,19 @@ class NovaPoshtaClient:
         matches = exact_city or addresses
 
         if wanted_area:
+            selected_area = self._area_info(area)
+            if inline_area and self._area_info(inline_area)["Ref"] != selected_area["Ref"]:
+                raise NovaPoshtaError("В заказе указаны разные области. Уточни область получателя.")
+            area_names = {_clean_geo(selected_area.get(key)) for key in ("Description", "DescriptionRu")}
+            area_names.discard("")
             regional = [
                 row
                 for row in matches
-                if _clean_geo(row.get("Area")) == wanted_area
+                if _clean_geo(row.get("Area")) in area_names
             ]
-            if regional:
-                matches = regional
+            if not regional:
+                raise NovaPoshtaError(f"Населённый пункт {query} не найден в области {area}.")
+            matches = regional
 
         if wanted_region:
             district = [
@@ -676,7 +692,7 @@ class NovaPoshtaClient:
             if not (warehouse or "").strip():
                 raise NovaPoshtaError("Не указано отделение НП или адрес доставки.")
 
-            city_ref = self.get_city_ref(city)
+            city_ref = self.get_city_ref(city, area=area)
             warehouse_ref = self.get_warehouse_ref(city_ref, warehouse)
             recipient_ref, contact_ref, recipient_phone = self.get_or_create_recipient(
                 full_name, phone, city_ref, email=email
