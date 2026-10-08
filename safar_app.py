@@ -32,6 +32,13 @@ from safar_returns import create_case, get_case, list_cases, carrier_snapshot, l
 
 
 STATIC_ROOT = Path(__file__).resolve().parent / "safar_web"
+photo_logger = logging.getLogger(__name__)
+
+
+def _photo_fail(code):
+    photo_logger.warning("SAFAR_PHOTO_READ_FAILED reason=%s", code)
+    abort(502)
+
 MAX_PHOTO_BYTES = 6 * 1024 * 1024
 STATES = {"collecting", "processing", "invalid", "failed", "uncertain", "created", "deleted"}
 EDIT_FIELDS = {"full_name", "phone", "city", "warehouse", "cost", "cod_amount", "weight", "description"}
@@ -810,24 +817,24 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
         try:
             remote_file = telegram_bot.get_file(item["file_id"], timeout=10)
         except Exception:
-            abort(502)
+            _photo_fail("lookup")
         path = getattr(remote_file, "file_path", None)
         if _number(getattr(remote_file, "file_size", 0), 0) > MAX_PHOTO_BYTES:
             abort(413)
         if (not isinstance(path, str) or not re.fullmatch(r"[A-Za-z0-9_/-]{1,240}\.(?:jpg|jpeg|png|webp)", path)
                 or ".." in path or path.startswith("/")):
-            abort(502)
+            _photo_fail("path")
         url = "https://api.telegram.org/file/bot" + telegram_token + "/" + path
         try:
             with requests.get(url, timeout=(5, 12), stream=True, allow_redirects=False) as upstream:
                 if upstream.status_code != 200:
-                    abort(502)
+                    _photo_fail("upstream_status")
                 length = upstream.headers.get("Content-Length", "")
                 if length and (not re.fullmatch(r"[0-9]+", length) or int(length) > MAX_PHOTO_BYTES):
                     abort(413)
                 content_type = upstream.headers.get("Content-Type", "").split(";", 1)[0].lower().strip()
                 if content_type not in {"image/jpeg", "image/png", "image/webp", "application/octet-stream"}:
-                    abort(502)
+                    _photo_fail("mime")
                 contents = bytearray()
                 for chunk in upstream.iter_content(chunk_size=32768):
                     if not chunk:
@@ -838,7 +845,7 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
                         abort(413)
                     contents.extend(chunk)
         except requests.RequestException:
-            abort(502)
+            _photo_fail("network")
         data = bytes(contents)
         kind = None
         if len(data) >= 4 and data.startswith(b"\xff\xd8\xff") and data.endswith(b"\xff\xd9"):
@@ -849,7 +856,7 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
             kind = "image/webp"
         extension_kind = "image/png" if path.endswith(".png") else "image/webp" if path.endswith(".webp") else "image/jpeg"
         if kind is None or kind != extension_kind or content_type not in {kind, "application/octet-stream"}:
-            abort(502)
+            _photo_fail("signature")
         return no_store(send_file(io.BytesIO(data), mimetype=kind, etag=False, conditional=False))
 
     return bp
