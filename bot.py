@@ -575,13 +575,12 @@ def register_command_handlers(telegram_bot):
     def whoami_handler(message):
         # Bootstrap command: reveals only the requester's own identifiers,
         # including when strict mode blocks other commands.
-        if message.chat.type != "private":
-            telegram_bot.reply_to(message, "Для получения ID напиши /whoami в личном чате с ботом.")
+        if message.chat.type not in {"private", "group", "supergroup"}:
             return
         telegram_bot.reply_to(
             message,
-            f"Твой Telegram User ID: {message.from_user.id}\\n"
-            f"Твой Private Chat ID: {message.chat.id}\\n\\n"
+            f"Твой Telegram User ID: {message.from_user.id}\n"
+            f"Chat ID: {message.chat.id}\n\n"
             "Для доступа из группы также потребуется её Chat ID. "
             "Не отправляй API-ключи или пароли в Telegram.",
         )
@@ -678,7 +677,7 @@ def register_command_handlers(telegram_bot):
                 f"• {order.get('full_name') or 'Новый заказ'} · "
                 f"{names.get(job['state'], job['state'])}"
             )
-        telegram_bot.reply_to(message, "\\n".join(lines))
+        telegram_bot.reply_to(message, "\n".join(lines))
 
     @telegram_bot.message_handler(commands=["stats"])
     def stats_handler(message):
@@ -693,12 +692,12 @@ def register_command_handlers(telegram_bot):
         problems = sum(counts.get(k, 0) for k in ("invalid", "failed", "uncertain"))
         telegram_bot.reply_to(
             message,
-            "📊 SAFAR — СТАТИСТИКА ЗАКАЗОВ\\n"
-            f"Всего записей: {sum(counts.values())}\\n"
-            f"Созданные: {counts.get('created', 0)}\\n"
-            f"В обработке: {pending}\\n"
-            f"Требуют внимания: {problems}\\n"
-            f"Удалённые ТТН: {counts.get('deleted', 0)}\\n\\n"
+            "📊 SAFAR — СТАТИСТИКА ЗАКАЗОВ\n"
+            f"Всего записей: {sum(counts.values())}\n"
+            f"Созданные: {counts.get('created', 0)}\n"
+            f"В обработке: {pending}\n"
+            f"Требуют внимания: {problems}\n"
+            f"Удалённые ТТН: {counts.get('deleted', 0)}\n\n"
             "Показаны записи текущего пользователя и чата, не финансовая выручка.",
         )
 
@@ -1054,12 +1053,12 @@ def webhook():
         text = message.get("text") or ""
         command = text.split(None, 1)[0].split("@", 1)[0] if text.startswith("/") else ""
         if not ACCESS_POLICY.permits(chat_id, (message.get("from") or {}).get("id")):
-            if command == "/whoami" and (message.get("chat") or {}).get("type") == "private":
+            if command == "/whoami" and (message.get("chat") or {}).get("type") in {"private", "group", "supergroup"}:
                 bot.send_message(
                     chat_id,
-                    f"Твой Telegram User ID: {(message.get('from') or {}).get('id')}\\n"
-                    f"Твой Private Chat ID: {chat_id}\\n\\n"
-                    "Для подключения доступа сообщи администратору эти ID.",
+                    f"Твой Telegram User ID: {(message.get('from') or {}).get('id')}\n"
+                    f"Chat ID: {chat_id}\n\n"
+                    "Эти ID нужны для настройки разрешённых пользователей и чатов.",
                 )
             pipeline.remember_update(update_id)
             return jsonify(ok=True, ignored=True)
