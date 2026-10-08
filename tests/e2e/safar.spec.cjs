@@ -59,6 +59,21 @@ test('SAFAR CONTROL shows a safe intake gate, returns tab and verified carrier r
   expect((await page.request.get('/api/safar/returns')).status()).toBe(200);
 });
 
+test('warehouse receipt requires physical confirmation and preserves finance', async ({ page }) => {
+  await signIn(page);
+  await page.locator('.order-row').first().click();
+  await page.locator('[data-action="open-return"]').click();
+  await page.locator('#returnReason').selectOption('refused_by_recipient');
+  await page.locator('#returnForm button[type="submit"]').click();
+  await expect(page.locator('.return-case-card')).toBeVisible();
+  await page.locator('[data-action="open-warehouse"]').first().click();
+  await page.locator('#warehouseTtn').fill('20400000000001');
+  await page.locator('#warehouseAcknowledged').check();
+  await page.locator('#warehouseReceiptForm button[type="submit"]').click();
+  await expect(page.locator('.return-case-card')).toContainText('Прийнято на складі');
+  await expect(page.locator('.return-case-card')).toContainText('Фінанси не підтверджені');
+});
+
 test('guest access fails closed, forged Telegram auth never returns orders', async ({ page }) => {
   await page.goto('/safar');
   await expect(page.locator('[data-action="pair-start"]')).toBeVisible();
