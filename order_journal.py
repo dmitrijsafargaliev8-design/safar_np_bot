@@ -69,8 +69,15 @@ class OrderJournal:
         connection_options = {}
         config = conninfo_to_dict(self.database_url)
         if config.get("sslmode") == "verify-full" and not config.get("sslrootcert"):
-            from requests.certs import where
-            connection_options["sslrootcert"] = where()
+            host = config.get("host", "")
+            if host.endswith(".pooler.supabase.com") or (host.startswith("db.") and host.endswith(".supabase.co")):
+                # Supabase signs database/pooler certificates with its own CA.
+                connection_options["sslrootcert"] = str(
+                    Path(__file__).resolve().parent / "certs" / "supabase-prod-ca-2021.crt"
+                )
+            else:
+                from requests.certs import where
+                connection_options["sslrootcert"] = where()
         connection = psycopg.connect(
             self.database_url, autocommit=True, row_factory=dict_row,
             prepare_threshold=None, connect_timeout=10,
