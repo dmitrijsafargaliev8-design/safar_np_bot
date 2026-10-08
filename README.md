@@ -1,5 +1,44 @@
 # SAFAR NP BOT
 
+## FOP as primary sender — deployment without publishing secrets
+
+**Goal:** new Telegram forwards ship under the FOP's own Nova Poshta cabinet,
+while the previous sender is available as `/sender default` and all old TTN
+receipts stay tied to the original account.
+
+In the **existing Render service** `safar_np_bot` → **Environment**, add
+both variables in **one Save & Deploy operation**:
+
+- `NP_FOP_API_KEY`: her already-issued FOP cabinet API key (secret).
+- `NP_PRIMARY_SENDER_PROFILE`: exact value `fop` (non-secret).
+
+**Never send the API key through Telegram, ChatGPT, GitHub, screenshots
+or README.** Leave `NOVA_POSHTA_API_KEY` and existing `NP_SENDER_*`
+unchanged: they are needed to check/delete previously issued TTNs.
+
+With these settings the bot uses `NP_FOP_API_KEY` for new orders, but does
+not copy any `NP_SENDER_*` fields from the former account. The FOP account
+must return **one unique sender, one unique contact, and one unique sending
+address** via read-only `Counterparty` queries; otherwise `/sendercheck`
+reports ambiguity and the shipment fails closed. If her account lists
+multiple entries, set exact official sender/contact/warehouse/city references
+under the `fop` entry in `NP_SENDER_PROFILES_JSON`; `api_key_env` must be
+`NP_FOP_API_KEY`. Do not guess references.
+
+After Render deploy, check `/ready`, then run `/sendercheck` and
+`/sender` in the private, authorized Telegram chat. These checks **do not
+create a TTN**. There are no per-operator explicit sender overrides as of
+the 2026-10-08 cutover, so changing `NP_PRIMARY_SENDER_PROFILE` makes
+`fop` the default for future orders. If operators later choose
+`/sender default`, that choice is sticky per operator/chat until switched.
+Old orders and retries preserve original `sender_profile` and cannot
+switch accounts merely because the global primary changed.
+
+To roll back the *default for new orders*, restore
+`NP_PRIMARY_SENDER_PROFILE=default` without removing the FOP key/profile,
+because any existing FOP orders may still require FOP API access to check
+their history or deletion.
+
 ## Smart corrections and multi-sender operations (candidate)
 
 **Single-field corrections:** Reply to a previously issued order card with
@@ -9,7 +48,7 @@ in one reply. Photos and the original immutable shipment receipt are retained.
 For a **created TTN**, the correction is only staged; first delete that TTN in
 Nova Poshta, then reply `/retry` to its card. A new TTN is blocked until
 the carrier confirms deletion. A full corrected order remains supported.
-Incomplete orders without a saved parsed record still require a complete order.
+Incomplete orders can also be supplemented with a missing named field by replying to the error card.
 
 **Sender switching:** `/sender` lists available configured profiles and your
 current profile in that chat. `/sender other` selects a profile for **future**
