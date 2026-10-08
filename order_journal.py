@@ -81,6 +81,33 @@ class OrderJournal:
                           OR (approved IS NOT NULL AND user_id>0 AND approved_chat_id=user_id))
                 );
                 CREATE INDEX IF NOT EXISTS app_pairings_expiry ON app_pairings(expires);
+                CREATE TABLE IF NOT EXISTS return_cases (
+                    id TEXT PRIMARY KEY,
+                    chat_id INTEGER NOT NULL,
+                    owner_id INTEGER NOT NULL,
+                    order_key TEXT NOT NULL,
+                    outbound_ttn TEXT NOT NULL,
+                    sender_profile TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    warehouse_state TEXT NOT NULL,
+                    finance_state TEXT NOT NULL,
+                    reverse_ttn TEXT,
+                    created REAL NOT NULL,
+                    updated REAL NOT NULL,
+                    UNIQUE(chat_id,owner_id,order_key)
+                );
+                CREATE INDEX IF NOT EXISTS return_cases_owner_updated
+                    ON return_cases(chat_id,owner_id,updated DESC);
+                CREATE TABLE IF NOT EXISTS return_events (
+                    id TEXT PRIMARY KEY,
+                    case_id TEXT NOT NULL REFERENCES return_cases(id),
+                    actor_id INTEGER NOT NULL,
+                    at REAL NOT NULL,
+                    event_type TEXT NOT NULL,
+                    details TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS return_events_case_time
+                    ON return_events(case_id,at,id);
             """)
             self._connection.commit()
 
