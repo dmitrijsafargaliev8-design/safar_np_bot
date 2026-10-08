@@ -24,7 +24,7 @@ from safar_auth import (
     require_same_origin, verify_telegram_init_data,
 )
 from safar_operations import sender_summary, select_sender, tracking
-from safar_returns import create_case, get_case, list_cases
+from safar_returns import create_case, get_case, list_cases, carrier_snapshot
 
 
 STATIC_ROOT = Path(__file__).resolve().parent / "safar_web"
@@ -457,6 +457,21 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
         if case is None:
             abort(404)
         return jsonify(case=case)
+
+    @bp.get("/api/safar/returns/<case_id>/tracking")
+    def return_case_tracking(case_id):
+        """Read carrier truth for the immutable outbound TTN and sender."""
+        session = current_session()
+        chat = current_scope(session)
+        try:
+            snapshot = carrier_snapshot(pipeline(), chat, session.user_id, case_id)
+        except ValueError:
+            abort(409)
+        except NovaPoshtaError:
+            abort(502)
+        if snapshot is None:
+            abort(404)
+        return jsonify(tracking=snapshot)
 
     @bp.get("/api/safar/orders")
     def orders():
