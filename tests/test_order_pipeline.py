@@ -260,3 +260,21 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(resumed.list_orders(100, 99)[0]["state"], "uncertain")
             finally:
                 resumed.close()
+
+    def test_correction_received_during_error_notification_is_preserved(self):
+        original = message(1, caption=ORDER.replace("Оценка 1600", ""))
+        sent = self.bot.send_message.side_effect
+        def send_with_correction(**kwargs):
+            correction = message(2, text=ORDER, photo=False)
+            correction["reply_to_message"] = original
+            self.pipeline.ingest(correction, 2)
+            self.bot.send_message.side_effect = sent
+            return sent(**kwargs)
+        self.bot.send_message.side_effect = send_with_correction
+        self.pipeline.ingest(original, 1)
+        self.drain()
+        self.assertEqual(self.job()["state"], "collecting")
+        self.now += 4
+        self.pipeline.tick()
+        self.client.create_ttn.assert_called_once()
+        self.assertEqual(self.bot.send_photo.call_args.kwargs["photo"], "file-1")

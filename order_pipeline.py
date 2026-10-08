@@ -324,22 +324,43 @@ class OrderPipeline:
                 process = False
         if process:
             self._process(job)
-        with self.lock, self.db:
-            # Include late photos/captions without discarding their journal entry.
-            current = self._job(job["key"])
-            job["messages"] = current["messages"]
-            if current.get("notice"):
-                job["notice"] = current["notice"]
-            self._write(job)
+        self._commit_result(job)
         if job["state"] != "collecting":
             try:
                 self._notify(job)
             except Exception as exc:
                 logger.warning("Telegram order notification failed: %s", type(exc).__name__)
                 job["due"] = self.clock() + 15
-            with self.lock, self.db:
-                self._write(job)
+            self._commit_result(job, after_notification=True)
         return True
+
+    def _commit_result(self, job, *, after_notification=False):
+        """Keep updates received while a shipment or notification was in flight."""
+        with self.lock, self.db:
+            current = self._job(job["key"])
+            previous_media = self.attachments(job)
+            previous_notice = job.get("notice")
+            source_changed = (current["messages"] != job["messages"] or
+                              current.get("override") != job.get("override"))
+            if current["state"] == "collecting" and job["state"] not in {"created", "uncertain"}:
+                # A correction or /retry arrived while an error was being sent.
+                job.clear()
+                job.update(current)
+            else:
+                job["messages"] = current["messages"]
+                job["anchor_id"] = current["anchor_id"]
+                if "override" in current:
+                    job["override"] = current["override"]
+                if current.get("notice"):
+                    job["notice"] = current["notice"]
+                if source_changed and job["state"] in {"invalid", "failed"}:
+                    job.update(state="collecting", notified=False,
+                               due=self.clock() + self.album_wait, attempts=0)
+                elif after_notification and job["state"] == "created" and (
+                        self.attachments(job) != previous_media or job.get("notice") != previous_notice):
+                    # Deliver the added photos with the existing TTN, never a new one.
+                    job.update(notified=False, due=self.clock() + self.album_wait)
+            self._write(job)
 
     def start(self):
         if self.thread and self.thread.is_alive():

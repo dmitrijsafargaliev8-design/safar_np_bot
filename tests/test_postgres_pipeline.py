@@ -138,3 +138,24 @@ class PostgresPipelineTests(fixtures.PipelineTests):
         self.pipeline.tick()
         self.client.create_ttn.assert_not_called()
         self.assertEqual(self.job()["state"], "uncertain")
+
+    def test_photo_arriving_during_notification_stays_linked_and_is_sent(self):
+        other = self.make_pipeline(":memory:")
+        self.addCleanup(other.close)
+        original = self.bot.send_photo.side_effect
+        def send_with_late_photo(**kwargs):
+            other.ingest(fixtures.message(2, group="same"), 2)
+            self.bot.send_photo.side_effect = original
+            return original(**kwargs)
+        self.bot.send_photo.side_effect = send_with_late_photo
+        self.pipeline.ingest(fixtures.message(1, caption=fixtures.ORDER, group="same"), 1)
+        self.drain()
+        self.assertTrue(other.has_update(2))
+        self.assertEqual(len(self.job()["messages"]), 2)
+        self.assertFalse(self.job()["notified"])
+        self.now += 4
+        self.pipeline.tick()
+        self.client.create_ttn.assert_called_once()
+        media = self.bot.send_media_group.call_args.kwargs["media"]
+        self.assertEqual([item.media for item in media], ["file-1", "file-2"])
+        self.assertTrue(self.job()["notified"])
