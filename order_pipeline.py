@@ -74,22 +74,21 @@ class OrderPipeline:
         return self.sender_clients[profile_id]
 
     def sender_preference(self, chat_id, owner_id):
-        try:
-            with self.lock:
-                row = self.db.execute(
-                    "SELECT profile_id FROM sender_preferences WHERE chat_id=? AND owner_id=?",
-                    (chat_id, owner_id),
-                ).fetchone()
-        except Exception as exc:
-            # Older disposable CI databases do not include the additive migration.
-            # The default-only setup is intrinsically safe: there is no second
-            # sender to select. As soon as another sender is configured, the
-            # migration becomes mandatory and we fail closed.
-            if (self.db.backend == "postgres"
-                    and getattr(exc, "sqlstate", None) == "42P01"
-                    and set(self.sender_clients) == {"default"}):
-                return "default"
-            raise
+        with self.lock:
+            if self.db.backend == "postgres":
+                # Check before querying: an UndefinedTable exception would
+                # poison the surrounding journal transaction in PostgreSQL.
+                exists = self.db.execute(
+                    "SELECT to_regclass('safar_orders.sender_preferences') AS relation"
+                ).fetchone()["relation"]
+                if not exists:
+                    if set(self.sender_clients) == {"default"}:
+                        return "default"  # legacy single-sender test database
+                    raise RuntimeError("Sender preference migration is required")
+            row = self.db.execute(
+                "SELECT profile_id FROM sender_preferences WHERE chat_id=? AND owner_id=?",
+                (chat_id, owner_id),
+            ).fetchone()
         return row["profile_id"] if row else "default"
 
     def set_sender_preference(self, chat_id, owner_id, profile_id):
