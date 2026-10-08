@@ -63,7 +63,7 @@ if not NOVA_POSHTA_API_KEY:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
-RELEASE_VERSION = "2026.10.08-existing-key-discovery-rc5"
+RELEASE_VERSION = "2026.10.08-safar-app-v0.1-rc1"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) if TELEGRAM_BOT_TOKEN else None
 np_client = NovaPoshtaClient(NOVA_POSHTA_API_KEY) if NOVA_POSHTA_API_KEY else None
 sender_profiles = SenderProfiles(np_client) if np_client else None
@@ -606,6 +606,7 @@ def parse_order(text: str):
 
 BOT_COMMANDS = (
     ("start", "Начать работу с ботом"),
+    ("app", "Открыть SAFAR APP для заказов и ТТН"),
     ("menu", "Все команды и быстрые подсказки"),
     ("help", "Как переслать заказ с фото"),
     ("example", "Образец заполненного заказа"),
@@ -668,6 +669,29 @@ def register_command_handlers(telegram_bot):
         if not _is_allowed(message):
             return
         telegram_bot.reply_to(message, MENU_TEXT)
+
+    @telegram_bot.message_handler(commands=["app"])
+    def app_handler(message):
+        if not _is_allowed(message) or message.chat.type != "private":
+            return
+        if not PUBLIC_BASE_URL.startswith("https://"):
+            telegram_bot.reply_to(message, "SAFAR APP ожидает HTTPS-адрес Render.")
+            return
+        address = PUBLIC_BASE_URL.rstrip("/") + "/safar"
+        # Telegram Web App supplies signed initData to the frontend.
+        # In a normal browser only the public demo is accessible.
+        button = telebot.types.InlineKeyboardButton(
+            "Открыть SAFAR APP", web_app=telebot.types.WebAppInfo(url=address)
+        )
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.add(button)
+        telegram_bot.reply_to(
+            message,
+            "SAFAR · SHIPPING OPERATIONS OS\n"
+            "Приложение для просмотра заказов, фото и ТТН.\n"
+            "Доступ защищён вашей Telegram-сессией.",
+            reply_markup=markup,
+        )
 
     @telegram_bot.message_handler(commands=["help"])
     def help_handler(message):
@@ -1316,3 +1340,16 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)
 
+
+
+# SAFAR APP is an isolated read-only Blueprint using the existing order journal.
+# It never adds shipment mutation routes or changes the signed webhook.
+from safar_app import create_safar_blueprint
+
+app.register_blueprint(create_safar_blueprint(
+    telegram_token=TELEGRAM_BOT_TOKEN,
+    webhook_secret=WEBHOOK_SECRET,
+    allowed=_access_permits,
+    get_pipeline=get_pipeline,
+    telegram_bot=bot,
+))
