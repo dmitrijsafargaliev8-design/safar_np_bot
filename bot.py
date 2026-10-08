@@ -61,7 +61,7 @@ if not NOVA_POSHTA_API_KEY:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
-RELEASE_VERSION = "2026.10.08-interactive-order-cards-v9"
+RELEASE_VERSION = "2026.10.08-operations-v2-rc1"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) if TELEGRAM_BOT_TOKEN else None
 np_client = NovaPoshtaClient(NOVA_POSHTA_API_KEY) if NOVA_POSHTA_API_KEY else None
 
@@ -611,6 +611,16 @@ def register_command_handlers(telegram_bot):
         telegram_ok = False
         np_ok = False
         sender_status = "не проверен"
+        storage_status = "ERROR"
+        try:
+            pipeline = get_pipeline()
+            if pipeline:
+                with pipeline.lock:
+                    if pipeline.db.ping():
+                        storage_status = ("PostgreSQL (постоянное)" if pipeline.db.persistent
+                                          else "SQLite (непостоянное на Render Free)")
+        except Exception:
+            logger.warning("Order journal status check failed")
 
         try:
             telegram_ok = bool(telegram_bot.get_me().id)
@@ -633,7 +643,8 @@ def register_command_handlers(telegram_bot):
             "SAFAR NP BOT\n"
             f"Telegram: {'OK' if telegram_ok else 'ERROR'}\n"
             f"Nova Poshta API: {'OK' if np_ok else 'ERROR'}\n"
-            f"Sender: {sender_status}",
+            f"Sender: {sender_status}\n"
+            f"Order journal: {storage_status}",
         )
 
     @telegram_bot.message_handler(commands=["orders"])
