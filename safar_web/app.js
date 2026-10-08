@@ -195,7 +195,7 @@ function returnScreen() {
  const item=c=>{
   const tr=view.returnTracking[c.id], busy=!!view.returnTrackingBusy[c.id], err=view.returnTrackingErrors[c.id];
   const latest=tr && tr.status ? `<div class="return-carrier" role="status"><div class="eyebrow">NOVA POSHTA / ${esc(t("checked"))} ${esc(dateStr(tr.checked_at))}</div><strong>${esc(tr.status)}</strong><p>${esc(t("returnWarehouse"))} · ${esc(language==="ru"?"Финансы не подтверждены":"Фінанси не підтверджені")}</p></div>` : `<p class="muted-text">${esc(t("returnUnknown"))}</p>`;
-  return `<article class="return-case-card"><div class="return-case-head"><div><div class="eyebrow">REVERSE / CASE</div><h3>${esc(labels[c.reason] || labels.other)}</h3><p class="selectable">${esc(c.outbound_ttn)}</p></div><span class="state state-uncertain">${esc(t("returnWarehouse"))}</span></div><div class="return-case-meta">${esc(dateStr(c.created_at))} · ${esc(c.sender_profile)}</div>${latest}${err ? `<p class="form-error" role="alert">${esc(err)}</p>` : ""}<div class="return-case-actions">${button("track-return",t(busy ? "trackingLoading" : "tracking"),"refresh",busy || view.offline,"button-quiet",`data-case-id="${esc(c.id)}"`)}<button class="button-quiet" data-order="${esc(c.order_id)}">${icon("arrow")}${esc(t("detail"))}</button></div></article>`;
+  return `<article class="return-case-card"><div class="return-case-head"><div><div class="eyebrow">REVERSE / CASE</div><h3>${esc(labels[c.reason] || labels.other)}</h3><p class="selectable">${esc(c.outbound_ttn)}</p></div><span class="state state-uncertain">${esc(t("returnWarehouse"))}</span></div><div class="return-case-meta">${esc(dateStr(c.created_at))} · ${esc(c.sender_profile)}</div>${latest}${err ? `<p class="form-error" role="alert">${esc(err)}</p>` : ""}<div class="return-case-actions">${button("track-return",t(busy ? "trackingLoading" : "tracking"),"refresh",busy || view.offline,"button-quiet",`data-case-id="${esc(c.id)}"`)}${c.reason==="easy_return_after_delivery" && !c.reverse_ttn ? button("open-easy-link",language==="ru"?"Связать обратную ТТН":"Пов’язати зворотну ТТН","link",view.offline,"button-quiet",`data-case-id="${esc(c.id)}"`) : ""}<button class="button-quiet" data-order="${esc(c.order_id)}">${icon("arrow")}${esc(t("detail"))}</button></div></article>`;
  };
  return `<div class="screen">${title("REVERSE / LOGISTICS",t("returns"),t("returnHelp"))}${view.returnsError ? errorPanel(view.returnsError,"refresh-returns") : ""}<div class="panel"><div class="panel-header"><h3>${esc(t("returns"))}</h3><span class="panel-small">${cases.length} ${esc(t("records"))}</span>${button("refresh-returns",t("refresh"),"refresh",view.returnsLoading || view.offline)}</div>${view.returnsLoading ? skeleton(3) : cases.length ? `<div class="return-case-list">${cases.map(item).join("")}</div>` : empty(t("returnEmpty"),t("returnHelp"))}</div></div>`;
 }
@@ -402,6 +402,30 @@ async function submitIntake() {
  } catch(error) { if(epoch===sessionEpoch && errorBox) errorBox.textContent=error.message; }
  finally { view.saving=false; for(const el of dialog.querySelectorAll("button")) el.disabled=false; }
 }
+function openEasyReturnLink(id) {
+ const c=view.returnCases.find(x=>x.id===id);
+ if (!c || c.reason!=="easy_return_after_delivery" || c.reverse_ttn) return;
+ const dialog=document.getElementById("actionDialog");
+ dialog.linkCaseId=id;
+ const heading=language==="ru"?"Связать обратную ТТН":"Пов’язати зворотну ТТН";
+ const hint=language==="ru"?"Номер будет привязан только при подтверждении связи исходной ТТН через API Новой Почты. Никакой новой отправки не создаётся.":"Номер буде пов’язано лише після підтвердження зв’язку через API Нової пошти. Нове відправлення не створюється.";
+ dialog.innerHTML=`<div class="dialog-top"><div><div class="eyebrow">EASY RETURN / VERIFIED</div><h2 id="actionTitle">${esc(heading)}</h2></div>${button("close-dialog",t("close"),"close",false,"icon-button")}</div><p class="muted-text">${esc(hint)}</p><form id="easyReturnLinkForm"><label for="reverseTtn">${esc(t("waybill"))}</label><input id="reverseTtn" name="reverse_ttn" inputmode="numeric" autocomplete="off" maxlength="14" pattern="[0-9]{14}" required placeholder="20400000000000"><div id="easyReturnLinkError" role="alert" class="form-error"></div><div class="form-actions"><button class="button-primary" type="submit">${icon("check")}${esc(heading)}</button>${button("close-dialog",t("cancel"),"close")}</div></form>`;
+ openDialog(dialog); document.getElementById("reverseTtn")?.focus({preventScroll:true});
+}
+async function submitEasyReturnLink() {
+ const dialog=document.getElementById("actionDialog"), id=dialog.linkCaseId;
+ const input=document.getElementById("reverseTtn"), err=document.getElementById("easyReturnLinkError");
+ if(!id || !input || !/^[0-9]{14}$/.test(input.value)) {if(err)err.textContent=t("validation");return;}
+ const epoch=sessionEpoch; view.saving=true;
+ for(const control of dialog.querySelectorAll("button")) control.disabled=true;
+ try {
+  const result=await jsonRequest("/api/safar/returns/"+encodeURIComponent(id)+"/link-easy-return",{method:"POST",body:JSON.stringify({reverse_ttn:input.value,chat_id:view.chatId})});
+  if(epoch!==sessionEpoch) return;
+  view.saving=false; view.returnCases=view.returnCases.map(c=>c.id===id?result.case:c);
+  closeDialog(); render(); toast(language==="ru"?"Связь подтверждена Новой Почтой":"Зв’язок підтверджено Новою поштою");
+ } catch(error) {if(epoch===sessionEpoch&&err)err.textContent=error.message;}
+ finally {view.saving=false;for(const control of dialog.querySelectorAll("button"))control.disabled=false;}
+}
 let dialogReturnFocus = null;
 function openDialog(dialog) { dialogReturnFocus = document.activeElement; if (!dialog.open) dialog.showModal(); document.body.classList.add('dialog-open'); }
 function closeDialog() { if (view.saving) return; for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close(); view.photo = null; document.body.classList.remove('dialog-open'); if (dialogReturnFocus?.isConnected) dialogReturnFocus.focus({preventScroll:true}); dialogReturnFocus = null; }
@@ -511,6 +535,7 @@ document.addEventListener('click',async event => {
  if (action === 'radar-refresh') return fetchShipmentRadar();
  if (action === 'refresh-returns') return fetchReturns();
  if (action === 'track-return') return fetchReturnTracking(control.dataset.caseId);
+ if (action === 'open-easy-link') return openEasyReturnLink(control.dataset.caseId);
  if (action === 'open-return') return openReturnDialog();
  if (action === 'load-more') return fetchOrders(true);
  if (action === 'clear-filters') { view.search = ''; view.filter = 'all'; view.sender = ''; view.period = 'all'; return fetchOrders(); }
@@ -538,7 +563,7 @@ document.addEventListener('click',async event => {
  if (action === 'pair-cancel') { pairSequence++; clearTimeout(pairingTimer); view.pair = null; view.pairBusy = false; view.pairError = ''; render(); return; }
  if (action === 'install' && view.installPrompt) { const prompt = view.installPrompt; view.installPrompt = null; await prompt.prompt(); render(); }
 });
-document.addEventListener('submit',event => { if (event.target.id === 'correctionForm') { event.preventDefault(); reviewCorrection(); } else if (event.target.id === 'returnForm') { event.preventDefault(); createReturnCase(); } else if (event.target.id === 'intakeForm') { event.preventDefault(); submitIntake(); } });
+document.addEventListener('submit',event => { if (event.target.id === 'correctionForm') { event.preventDefault(); reviewCorrection(); } else if (event.target.id === 'returnForm') { event.preventDefault(); createReturnCase(); } else if (event.target.id === 'intakeForm') { event.preventDefault(); submitIntake(); } else if (event.target.id === 'easyReturnLinkForm') { event.preventDefault(); submitEasyReturnLink(); } });
 document.addEventListener('input',event => {
  if (event.target.id === 'orderSearch') { view.search = event.target.value; clearTimeout(searchTimer); searchTimer = setTimeout(() => { view.orders = []; fetchOrders(); },300); }
  if (event.target.closest('#correctionForm')) { if (view.editDraft) view.editDraft[event.target.name] = event.target.value; }
