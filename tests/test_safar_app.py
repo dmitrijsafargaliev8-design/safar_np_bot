@@ -507,6 +507,26 @@ class SafarAppTests(unittest.TestCase):
         self.assertEqual(len(self.get("/api/safar/returns").json["cases"]), 1)
         self.assertEqual(len(self.get("/api/safar/returns/" + case["id"]).json["case"]["events"]), 1)
 
+    def test_pdf_proxy_uses_original_sender_and_never_exposes_key(self):
+        self.login()
+        self.assertEqual(self.get("/api/safar/orders/job-alpha/pdf").status_code, 404)
+        self.carrier.fetch_ttn_pdf.return_value = b"%PDF-1.4\n%mock unit PDF\n%%EOF"
+        with patch.dict(os.environ, {"SAFAR_NP_PDF_PRINT": "1"}):
+            detail = self.get("/api/safar/orders/job-alpha")
+            self.assertTrue(detail.json["order"]["can_print"])
+            response = self.get("/api/safar/orders/job-alpha/pdf")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.mimetype, "application/pdf")
+            self.assertTrue(response.data.startswith(b"%PDF-"))
+            self.assertIn("attachment", response.headers["Content-Disposition"])
+            self.assertIn("no-store", response.headers["Cache-Control"])
+            self.assertNotIn("private-carrier-ref", str(response.headers))
+            self.carrier.fetch_ttn_pdf.assert_called_once_with(SAMPLE["result"]["ttn"], doc_ref="")
+            self.other_carrier.fetch_ttn_pdf.assert_not_called()
+            self.assertEqual(self.get("/api/safar/orders/job-alpha/pdf?chat_id=" + str(GROUP)).status_code, 404)
+            self.assertEqual(self.get("/api/safar/orders/no-such-job/pdf").status_code, 404)
+        self.assertEqual(self.get("/api/safar/orders/job-alpha").json["order"]["can_print"], False)
+
 
 if __name__ == "__main__":
     unittest.main()
