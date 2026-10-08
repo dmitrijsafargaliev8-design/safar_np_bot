@@ -580,6 +580,28 @@ class OrderPipeline:
             ).fetchall()
         return [json.loads(row["body"]) for row in rows]
 
+    def list_orders_page(self, chat_id, owner_id, *, limit=20, offset=0):
+        """Stable, owner-scoped pagination with DB timestamps, never raw public SQL.
+
+        Legacy list_orders remains unchanged for Telegram /orders commands.
+        """
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 60:
+            raise ValueError("Invalid page limit")
+        if not isinstance(offset, int) or isinstance(offset, bool) or not 0 <= offset <= 10000:
+            raise ValueError("Invalid page offset")
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT body, updated FROM jobs WHERE chat_id=? AND owner_id=? "
+                "ORDER BY updated DESC, key DESC LIMIT ? OFFSET ?",
+                (chat_id, owner_id, limit, offset),
+            ).fetchall()
+        result = []
+        for row in rows:
+            job = json.loads(row["body"])
+            job["updated_at"] = row["updated"]
+            result.append(job)
+        return result
+
     def list_orders(self, chat_id, owner_id, limit=10):
         with self.lock:
             rows = self.db.execute("SELECT body FROM jobs WHERE chat_id=? AND owner_id=? ORDER BY updated DESC LIMIT ?",
