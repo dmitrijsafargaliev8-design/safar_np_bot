@@ -94,6 +94,7 @@ class OrderPipeline:
                 job = dict(key=key, chat_id=chat_id, owner_id=owner_id, thread_id=thread,
                            anchor_id=message_id, messages=[], state="collecting", due=0,
                            attempts=0, notified=False, result=None, order=None, identity=None)
+            previous_media = self.attachments(job)
             # Preserve source images when a complete correction is sent as a reply.
             if linked and (message.get("text") or message.get("caption")) and not retry:
                 job["override"] = message.get("text") or message.get("caption")
@@ -111,6 +112,9 @@ class OrderPipeline:
                     job["notice"] = "ТТН уже создана. Изменение текста не меняет готовую накладную."
                     job["notified"] = False
                     job["due"] = self.clock()
+                if self.attachments(job) != previous_media:
+                    job.update(notified=False, due=self.clock() + self.album_wait)
+                    self._remember_completed_bundle(job)
             elif job["state"] not in {"processing", "uncertain"}:
                 job.update(state="collecting", notified=False, attempts=0)
                 job["due"] = self.clock() + (self.album_wait if group else 0.2)
@@ -167,6 +171,17 @@ class OrderPipeline:
                  order, sorted(a["unique_id"] for a in self.attachments(job)),
                  None if origins else " ".join(raw_content.split()).casefold()]
         return hashlib.sha256(_json(scope).encode()).hexdigest()
+
+    def _remember_completed_bundle(self, job):
+        """A fuller album is still the same shipment when it is forwarded again."""
+        if job["state"] != "created" or not job.get("order") or not job.get("result"):
+            return
+        identity = self._identity(job, job["order"])
+        if identity != job.get("identity"):
+            self.db.execute(
+                "INSERT INTO receipts VALUES (?,?,?,?) ON CONFLICT(identity) DO NOTHING",
+                (identity, "created", _json({"result": job["result"], "order": job["order"]}), self.clock()),
+            )
 
     def _parse(self, job):
         if job.get("override"):
@@ -360,6 +375,8 @@ class OrderPipeline:
                         self.attachments(job) != previous_media or job.get("notice") != previous_notice):
                     # Deliver the added photos with the existing TTN, never a new one.
                     job.update(notified=False, due=self.clock() + self.album_wait)
+            if source_changed and job["state"] == "created":
+                self._remember_completed_bundle(job)
             self._write(job)
 
     def start(self):

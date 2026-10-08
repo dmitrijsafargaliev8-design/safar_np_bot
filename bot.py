@@ -605,6 +605,26 @@ _pipeline = None
 _pipeline_lock = threading.Lock()
 
 
+def storage_error_details(exc):
+    """Keep connection diagnostics useful without writing credentials to logs."""
+    from urllib.parse import unquote, urlsplit
+    detail = str(exc)
+    secrets = [value for key, value in os.environ.items() if value and any(
+        word in key.upper() for word in ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "DATABASE_URL")
+    )]
+    try:
+        password = urlsplit(os.getenv("STATE_DATABASE_URL", "")).password
+        if password:
+            secrets.extend((password, unquote(password)))
+    except ValueError:
+        pass
+    for secret in sorted(set(secrets), key=len, reverse=True):
+        detail = detail.replace(secret, "[redacted]")
+    detail = re.sub(r"postgres(?:ql)?://[^\s]+", "postgresql://[redacted]", detail)
+    detail = re.sub(r"(?i)(password\s*=\s*)(?:'[^']*'|\"[^\"]*\"|[^\s]+)", r"\1[redacted]", detail)
+    return f"{type(exc).__name__} [{getattr(exc, 'sqlstate', None) or 'no SQLSTATE'}]: {detail[:1000]}"
+
+
 def get_pipeline():
     global _pipeline
     if not bot or not np_client:
@@ -631,7 +651,7 @@ def start_order_processor():
             pipeline.start()
     except Exception as exc:
         # Fail closed: Telegram retries instead of losing an acknowledged order.
-        logger.error("Order storage unavailable: %s", type(exc).__name__)
+        logger.error("Order storage unavailable: %s", storage_error_details(exc))
         return jsonify(error="order storage unavailable"), 503
 
 

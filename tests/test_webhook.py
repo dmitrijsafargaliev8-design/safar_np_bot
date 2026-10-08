@@ -93,3 +93,16 @@ class WebhookTests(unittest.TestCase):
             result = self.post({"update_id": 1, "message": message(1, caption=ORDER)})
         self.assertEqual(result.status_code, 503)
         self.np.create_ttn.assert_not_called()
+
+    def test_storage_diagnostics_redact_credentials_and_retain_cause(self):
+        database_url = "postgresql://safar_bot:private%3Apassword@db.example/postgres?sslmode=verify-full"
+        problem = RuntimeError("certificate verify failed; private:password; " + database_url + " password='other-secret'")
+        with patch.dict(os.environ, {"STATE_DATABASE_URL": database_url}), patch.object(
+                app_module, "get_pipeline", side_effect=problem), self.assertLogs("safar_np_bot", level="ERROR") as captured:
+            result = self.post({"update_id": 1, "message": message(1, caption=ORDER)})
+        self.assertEqual(result.status_code, 503)
+        logged = "\n".join(captured.output)
+        self.assertIn("certificate verify failed", logged)
+        for secret in ("private:password", "private%3Apassword", "other-secret", database_url):
+            self.assertNotIn(secret, logged)
+        self.np.create_ttn.assert_not_called()

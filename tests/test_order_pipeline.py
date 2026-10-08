@@ -278,3 +278,34 @@ class PipelineTests(unittest.TestCase):
         self.pipeline.tick()
         self.client.create_ttn.assert_called_once()
         self.assertEqual(self.bot.send_photo.call_args.kwargs["photo"], "file-1")
+
+    def test_photo_after_completed_notification_updates_card_without_new_ttn(self):
+        self.pipeline.ingest(message(1, caption=ORDER, group="album"), 1)
+        self.drain()
+        self.assertTrue(self.job()["notified"])
+        self.pipeline.ingest(message(2, group="album"), 2)
+        self.assertFalse(self.job()["notified"])
+        self.drain()
+        self.client.create_ttn.assert_called_once()
+        media = self.bot.send_media_group.call_args.kwargs["media"]
+        self.assertEqual([item.media for item in media], ["file-1", "file-2"])
+
+    def test_reforward_of_album_expanded_after_creation_reuses_ttn(self):
+        origin = {"type": "hidden_user", "sender_user_name": "Seller", "date": 1791300000}
+        first = message(1, caption=ORDER, group="first", unique="first-photo")
+        first["forward_origin"] = origin
+        self.pipeline.ingest(first, 1)
+        self.drain()
+        second = message(2, group="first", unique="second-photo")
+        second["forward_origin"] = origin
+        self.pipeline.ingest(second, 2)
+        self.drain()
+        repeat = copy.deepcopy(first)
+        repeat.update(message_id=10, media_group_id="repeat")
+        repeated_second = copy.deepcopy(second)
+        repeated_second.update(message_id=11, media_group_id="repeat")
+        self.pipeline.ingest(repeat, 10)
+        self.pipeline.ingest(repeated_second, 11)
+        self.drain()
+        self.client.create_ttn.assert_called_once()
+        self.assertTrue(self.job()["duplicate"])
