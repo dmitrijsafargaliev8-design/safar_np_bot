@@ -513,6 +513,7 @@ class SafarAppTests(unittest.TestCase):
         headers = {"Origin": BASE, "X-CSRF-Token": self.csrf}
         text = "ФИО: Іван Іваненко\nТелефон: 0500000001\nГород: Одеса\nОтделение: 4\nОценка: 1600"
         request_id = "private-photo-request-000001"
+        self.carrier.create_ttn.return_value = {"ttn": "20400000000077"}
         self.telegram.send_photo.return_value = SimpleNamespace(
             photo=[SimpleNamespace(file_id="safe-private-telegram-file",
                     file_unique_id="private-image-sha", width=600, height=800)])
