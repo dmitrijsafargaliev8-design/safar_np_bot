@@ -178,10 +178,13 @@ class PipelineTests(unittest.TestCase):
         self.assertFalse(self.pipeline.tick())
         self.drain()
         self.client.create_ttn.assert_called_once()
+        lead = self.bot.send_photo.call_args.kwargs
+        self.assertEqual(lead["photo"], "file-1")
+        self.assertIn("20400000000001", lead["caption"])
+        self.assertEqual(len(lead["reply_markup"].keyboard), 2)
         self.bot.send_media_group.assert_called_once()
         group = self.bot.send_media_group.call_args.kwargs["media"]
-        self.assertEqual([m.media for m in group], ["file-1", "file-2", "file-3"])
-        self.assertIn("20400000000001", group[0].caption)
+        self.assertEqual([m.media for m in group], ["file-2", "file-3"])
         self.assertEqual(self.job()["anchor_id"], 2)
 
     def test_duplicate_update_not_reprocessed(self):
@@ -245,6 +248,22 @@ class PipelineTests(unittest.TestCase):
         self.client.create_ttn.assert_called_once()
         self.assertIn("повторная ТТН не создавалась", self.bot.send_photo.call_args.kwargs["caption"])
         self.client.is_ttn_deleted.assert_called_once_with("20400000000001", phone="380500000001")
+
+    def test_corrected_issued_order_cannot_bypass_active_ttn_guard(self):
+        self.pipeline.ingest(message(1, caption=ORDER), 1)
+        self.drain()
+        first_card = self.sent_id
+        correction = message(2, text=ORDER.replace("Оценка 1600", "Оценка 1800"), photo=False)
+        correction["reply_to_message"] = {"message_id": first_card}
+        self.pipeline.ingest(correction, 2)
+        self.drain()
+        retry = message(3, text="/retry", photo=False)
+        retry["reply_to_message"] = {"message_id": self.sent_id}
+        self.pipeline.ingest(retry, 3, retry=True)
+        self.drain()
+        self.assertEqual(self.client.create_ttn.call_count, 1)
+        self.client.is_ttn_deleted.assert_called()
+        self.assertEqual(self.job()["result"]["ttn"], "20400000000001")
 
     def test_deleted_ttn_can_be_recreated_repeatedly_with_same_photo(self):
         self.client.create_ttn.side_effect = [
@@ -540,8 +559,10 @@ class PipelineTests(unittest.TestCase):
         self.assertFalse(self.job()["notified"])
         self.drain()
         self.client.create_ttn.assert_called_once()
-        media = self.bot.send_media_group.call_args.kwargs["media"]
-        self.assertEqual([item.media for item in media], ["file-1", "file-2"])
+        # The cover remains a real photo card; one extra photo is sent separately.
+        photos = [call.kwargs["photo"] for call in self.bot.send_photo.call_args_list]
+        self.assertEqual(photos[-2:], ["file-1", "file-2"])
+        self.assertIsNotNone(self.bot.send_photo.call_args_list[-2].kwargs["reply_markup"])
 
     def test_reforward_of_album_expanded_after_creation_reuses_ttn(self):
         origin = {"type": "hidden_user", "sender_user_name": "Seller", "date": 1791300000}

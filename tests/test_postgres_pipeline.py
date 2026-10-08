@@ -87,8 +87,9 @@ class PostgresPipelineTests(fixtures.PipelineTests):
             self.assertEqual([future.result(timeout=15) for future in futures], [True, True])
         self.drain()
         self.client.create_ttn.assert_called_once()
-        media = self.bot.send_media_group.call_args.kwargs["media"]
-        self.assertEqual([item.media for item in media], ["file-1", "file-2"])
+        photos = [call.kwargs["photo"] for call in self.bot.send_photo.call_args_list]
+        self.assertEqual(photos[-2:], ["file-1", "file-2"])
+        self.assertIsNotNone(self.bot.send_photo.call_args_list[-2].kwargs["reply_markup"])
 
     def test_concurrent_duplicate_webhook_is_acknowledged_only_once(self):
         other = self.make_pipeline(":memory:")
@@ -156,6 +157,7 @@ class PostgresPipelineTests(fixtures.PipelineTests):
         self.now += 4
         self.pipeline.tick()
         self.client.create_ttn.assert_called_once()
-        media = self.bot.send_media_group.call_args.kwargs["media"]
-        self.assertEqual([item.media for item in media], ["file-1", "file-2"])
+        photos = [call.kwargs["photo"] for call in self.bot.send_photo.call_args_list]
+        self.assertEqual(photos[-2:], ["file-1", "file-2"])
+        self.assertIsNotNone(self.bot.send_photo.call_args_list[-2].kwargs["reply_markup"])
         self.assertTrue(self.job()["notified"])

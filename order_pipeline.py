@@ -240,7 +240,11 @@ class OrderPipeline:
         job.pop("duplicate", None)
         job.pop("replaced_ttn", None)
         job.pop("notice", None)
-        identity = job["identity"] = self._identity(job, order)
+        # A correction to an already-issued card must stay bound to its
+        # original receipt. Otherwise changed fields would form a new hash and
+        # bypass the existing-TTN deletion check.
+        previous_identity = job.get("identity") if job.get("result") else None
+        identity = job["identity"] = previous_identity or self._identity(job, order)
         with self.lock:
             row = self.db.execute("SELECT * FROM receipts WHERE identity=?", (identity,)).fetchone()
         receipt = {"order": order}
@@ -325,56 +329,60 @@ class OrderPipeline:
                        due=self.clock(), notified=False)
 
     def _notify(self, job):
+        """Send a photo-first shipment card with a native 2×2 inline keyboard."""
         media = self.attachments(job)
+        kwargs = dict(chat_id=job["chat_id"], reply_to_message_id=job["anchor_id"],
+                      allow_sending_without_reply=True, timeout=15)
+        if job.get("thread_id"):
+            kwargs["message_thread_id"] = job["thread_id"]
+        sent = []
         if job["state"] == "created":
-            order, result = job["order"], job["result"]
-            point_label = ("Поштомат" if order.get("delivery_point_type") == "postomat" else "НП")
-            destination = (f"{order['city']} · {point_label} {order['warehouse']}" if order["warehouse"]
-                           else f"{order['city']} · {order['street']} {order['house']}" + (f", кв. {order['flat']}" if order["flat"] else ""))
-            text = (f"✅ ТТН: {result['ttn']}\n{destination}\n{order['full_name']}\n{order['phone']}\n"
-                    f"Оценка: {order['cost']:g} грн\n"
-                    + (f"Наложка: {order['cod_amount']:g} грн" if order["cod_amount"] else "Без наложки"))
-            if job.get("duplicate"):
-                text += "\nЭтот заказ уже обработан; повторная ТТН не создавалась."
-            if job.get("replaced_ttn"):
-                text += f"\nПредыдущая ТТН {job['replaced_ttn']} удалена в НП. Создана новая."
-            if job.get("notice"):
-                text += "\n" + job["notice"]
-            if result.get("estimated_delivery_date"):
-                text += f"\nДоставка: {result['estimated_delivery_date']}"
+            from order_card import build_card_keyboard, format_order_card
+            result = job["result"]
+            text = format_order_card(
+                job["order"], result, sum(a["kind"] == "photo" for a in media),
+                duplicate=job.get("duplicate", False), replaced_ttn=job.get("replaced_ttn"),
+                notice=job.get("notice"),
+            )
+            markup = build_card_keyboard(result["ttn"])
+            if media:
+                # Telegram does not permit inline keyboards on sendMediaGroup:
+                # attach the 2x2 controls to a lead photo, then send any extras.
+                lead = next((a for a in media if a["kind"] == "photo"), media[0])
+                sent.append(getattr(self.bot, "send_" + lead["kind"])(
+                    **{lead["kind"]: lead["file_id"]}, caption=text[:1024],
+                    reply_markup=markup, **kwargs,
+                ))
+                extras = [a for a in media if a is not lead]
+                visuals = [a for a in extras if a["kind"] in {"photo", "video"}]
+                for start in range(0, len(visuals), 10):
+                    batch = visuals[start:start + 10]
+                    if len(batch) == 1:
+                        item = batch[0]
+                        sent.append(getattr(self.bot, "send_" + item["kind"])(
+                            **{item["kind"]: item["file_id"]}, **kwargs,
+                        ))
+                    else:
+                        items = [
+                            (types.InputMediaPhoto if item["kind"] == "photo" else types.InputMediaVideo)(item["file_id"])
+                            for item in batch
+                        ]
+                        sent.extend(self.bot.send_media_group(media=items, **kwargs))
+                for item in extras:
+                    if item["kind"] not in {"photo", "video"}:
+                        sent.append(getattr(self.bot, "send_" + item["kind"])(
+                            **{item["kind"]: item["file_id"]}, **kwargs,
+                        ))
+            else:
+                sent.append(self.bot.send_message(text=text[:4096], reply_markup=markup, **kwargs))
         else:
             text = "⚠️ " + job.get("error", "Не удалось обработать заказ.")
             if job["state"] != "uncertain":
                 text += "\n\nОтветь на это сообщение полным исправленным заказом. Фото сохранятся."
                 if job["state"] == "failed":
                     text += "\nДля повтора без изменений ответь командой /retry."
-        kwargs = dict(chat_id=job["chat_id"], reply_to_message_id=job["anchor_id"],
-                      allow_sending_without_reply=True, timeout=15)
-        if job.get("thread_id"):
-            kwargs["message_thread_id"] = job["thread_id"]
-        sent = []
-        if job["state"] == "created" and media:
-            # Albums may mix photo/video. Documents must form their own album;
-            # individual sends retain all other attachments and their caption.
-            visual = [a for a in media if a["kind"] in {"photo", "video"}]
-            if len(visual) > 1:
-                for start in range(0, len(visual), 10):
-                    batch = visual[start:start + 10]
-                    if len(batch) == 1:
-                        sent.append(self.bot.send_photo(photo=batch[0]["file_id"], caption=text[:1024], **kwargs)
-                                    if batch[0]["kind"] == "photo" else self.bot.send_video(video=batch[0]["file_id"], caption=text[:1024], **kwargs))
-                    else:
-                        items = [(types.InputMediaPhoto if a["kind"] == "photo" else types.InputMediaVideo)(
-                            a["file_id"], caption=text[:1024] if i == 0 else None) for i, a in enumerate(batch)]
-                        sent.extend(self.bot.send_media_group(media=items, **kwargs))
-                remaining = [a for a in media if a["kind"] not in {"photo", "video"}]
-            else:
-                remaining = media
-            for a in remaining:
-                send = getattr(self.bot, "send_" + a["kind"])
-                sent.append(send(**{a["kind"]: a["file_id"]}, caption=text[:1024], **kwargs))
-        else:
             sent.append(self.bot.send_message(text=text[:4096], **kwargs))
+        # The lead photo and every attachment can resolve the same owner-scoped order.
         with self.lock, self.db:
             for message in sent:
                 self.db.execute("INSERT INTO messages VALUES (?,?,?) ON CONFLICT(chat_id,message_id) DO UPDATE SET key=excluded.key",
@@ -476,6 +484,23 @@ class OrderPipeline:
                 (chat_id, message_id, owner_id),
             ).fetchone()
             return json.loads(row["body"]) if row else None
+
+    def history_for_message(self, chat_id, owner_id, message_id):
+        """Shipment lifecycle for the card owner only; no cross-user lookups."""
+        job = self.order_for_message(chat_id, owner_id, message_id)
+        if job is None:
+            return None
+        identity = job.get("identity")
+        history = []
+        current = job.get("result") or {}
+        if identity:
+            with self.lock:
+                row = self.db.execute("SELECT result FROM receipts WHERE identity=?", (identity,)).fetchone()
+            if row and row["result"]:
+                data = json.loads(row["result"])
+                history = list(data.get("history") or [])
+                current = data.get("result") or current
+        return dict(history=history, current=current, state=job["state"])
 
     def close(self):
         self.stop.set()

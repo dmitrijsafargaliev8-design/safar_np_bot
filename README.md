@@ -4,6 +4,18 @@ Existing Flask / Gunicorn service for forwarded Nova Poshta orders.
 
 - Forward a photo with its order caption, or an album with a caption on any image.
 - The bot collects an album for 3 seconds and creates one shipment.
+- Completed orders appear as a Telegram photo-first card with a 2×2 keyboard:
+  **Статус доставки**, **Исправить заказ**, **Копировать ТТН**, **История заказа**.
+  The copy button uses Telegram's native clipboard action (Bot API 7.11+).
+  The lead image carries the card and the remaining album photos are delivered
+  separately because Telegram cannot attach inline keyboards to a media group.
+  All sent message IDs remain linked to the same owner-scoped order.
+- Button callbacks use the existing signed webhook with \`callback_query\` updates.
+  Only the original forwarding user in the same chat can inspect shipment
+  tracking/history or request correction help. A correction to an issued card
+  stays tied to its original receipt, so changing fields cannot bypass the
+  active-TTN duplicate guard.
+
 - Its reply includes the photos, shipment number, recipient, destination and amounts.
 - Declared value is required. Cash on delivery is enabled only by an explicit COD field.
 - Reply to an error with a complete corrected order; the original photos stay attached.

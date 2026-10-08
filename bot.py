@@ -58,7 +58,7 @@ if not NOVA_POSHTA_API_KEY:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
-RELEASE_VERSION = "2026.10.08-command-menu-v8"
+RELEASE_VERSION = "2026.10.08-interactive-order-cards-v9"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) if TELEGRAM_BOT_TOKEN else None
 np_client = NovaPoshtaClient(NOVA_POSHTA_API_KEY) if NOVA_POSHTA_API_KEY else None
 
@@ -673,6 +673,73 @@ def register_command_handlers(telegram_bot):
         if _is_allowed(message):
             telegram_bot.reply_to(message, "Ответь командой /retry на карточку заказа или сообщение с ошибкой. Фото сохранятся.")
 
+    @telegram_bot.callback_query_handler(func=lambda call: str(getattr(call, "data", "") or "").startswith("safar:"))
+    def card_action_handler(call):
+        """Actions never mutate shipments and are scoped to card owner."""
+        action = (call.data or "").split(":", 1)[-1]
+        if action not in {"track", "edit", "history"} or not getattr(call, "message", None):
+            telegram_bot.answer_callback_query(call.id, "Неизвестная кнопка", show_alert=True)
+            return
+        message = call.message
+        if not _is_allowed(message):
+            telegram_bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+            return
+        pipeline = get_pipeline()
+        job = (pipeline.order_for_message(message.chat.id, call.from_user.id, message.message_id)
+               if pipeline else None)
+        if not job:
+            telegram_bot.answer_callback_query(call.id, "Заказ доступен только его отправителю", show_alert=True)
+            return
+        history = pipeline.history_for_message(message.chat.id, call.from_user.id, message.message_id)
+        result = (history or {}).get("current") or job.get("result") or {}
+        ttn = str(result.get("ttn") or "")
+        order = job.get("order") or {}
+        telegram_bot.answer_callback_query(call.id)
+        reply = dict(chat_id=message.chat.id, reply_to_message_id=message.message_id,
+                     allow_sending_without_reply=True)
+        if getattr(message, "message_thread_id", None):
+            reply["message_thread_id"] = message.message_thread_id
+        if action == "edit":
+            if job["state"] == "created":
+                text = (
+                    "✏️ Исправить оформленную ТТН:\n"
+                    "1. Сначала удали действующую ТТН в Новой почте.\n"
+                    "2. Ответь НА ЭТУ карточку полным исправленным заказом.\n"
+                    "3. Отправь /retry ответом на карточку.\n\n"
+                    "Пока удаление не подтверждено НП, бот не создаст вторую ТТН. Фото сохранятся."
+                )
+            else:
+                text = "✏️ Ответь НА ЭТУ карточку полным исправленным заказом. Фотографии сохранятся."
+            telegram_bot.send_message(text=text, **reply)
+        elif action == "history":
+            records = (history or {}).get("history") or []
+            lines = ["🕘 ИСТОРИЯ ЗАКАЗА"]
+            for index, entry in enumerate(records, 1):
+                previous = (entry.get("result") or {}).get("ttn")
+                if previous:
+                    lines.append(f"{index}. ТТН {previous} — удалена")
+            if ttn:
+                lines.append(f"Текущая ТТН: {ttn} · {job['state']}")
+            if len(lines) == 1:
+                lines.append("История отправок пока отсутствует.")
+            telegram_bot.send_message(text="\n".join(lines), **reply)
+        else:
+            if not ttn or not np_client:
+                telegram_bot.send_message(text="Статус ТТН пока недоступен.", **reply)
+                return
+            try:
+                row = np_client.get_ttn_status(ttn, phone=order.get("phone", ""))
+                status = row.get("Status") or "Статус пока не указан"
+                text = f"🚚 ТТН: {ttn}\nСтатус: {status}"
+                code = str(row.get("StatusCode"))
+                if code in {"9", "10", "11"} and row.get("DateReceived"):
+                    text += f"\nПолучено: {row['DateReceived']}"
+                elif code not in {"2", "3"} and row.get("ScheduledDeliveryDate"):
+                    text += f"\nОжидаемая доставка: {row['ScheduledDeliveryDate']}"
+            except NovaPoshtaError:
+                text = "Новая почта временно недоступна. Нажми «Статус доставки» позже."
+            telegram_bot.send_message(text=text, **reply)
+
     @telegram_bot.message_handler(func=lambda message: bool((message.text or "").startswith("/")))
     def unknown_command_handler(message):
         if _is_allowed(message):
@@ -900,6 +967,11 @@ def webhook():
     try:
         if pipeline.has_update(update_id):
             return jsonify(ok=True, duplicate=True)
+        if payload.get("callback_query"):
+            update = telebot.types.Update.de_json(payload)
+            bot.process_new_updates([update])
+            pipeline.remember_update(update_id)
+            return jsonify(ok=True)
         message = payload.get("message") or payload.get("edited_message")
         if not isinstance(message, dict):
             pipeline.remember_update(update_id)
@@ -952,7 +1024,7 @@ def ensure_webhook():
             secret_token=WEBHOOK_SECRET,
             drop_pending_updates=False,
             max_connections=1,
-            allowed_updates=["message", "edited_message"],
+            allowed_updates=["message", "edited_message", "callback_query"],
             timeout=15,
         )
         logger.info("Telegram webhook configured for orders and corrections")
