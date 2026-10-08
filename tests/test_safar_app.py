@@ -527,6 +527,34 @@ class SafarAppTests(unittest.TestCase):
             self.assertEqual(self.get("/api/safar/orders/no-such-job/pdf").status_code, 404)
         self.assertEqual(self.get("/api/safar/orders/job-alpha").json["order"]["can_print"], False)
 
+    def test_easy_return_link_requires_exact_verified_original_and_never_orders_carrier(self):
+        self.login()
+        created = self.post("/api/safar/returns",
+                            {"chat_id": USER, "order_id": "job-alpha",
+                             "reason": "easy_return_after_delivery"})
+        self.assertEqual(created.status_code, 201)
+        case_id = created.json["case"]["id"]
+        reverse = "20400000000123"
+        route = f"/api/safar/returns/{case_id}/link-easy-return"
+        self.pipeline.set_sender_preference(USER, USER, "other")
+        self.carrier.get_ttn_status.return_value = {
+            "Number": reverse, "StatusCode": "4", "Status": "In transit",
+            "LightReturnNumber": "20400000000999"}
+        self.assertEqual(self.post(route, {"reverse_ttn": reverse, "chat_id": USER}).status_code, 422)
+        self.assertEqual(self.get("/api/safar/returns/" + case_id).json["case"]["reverse_ttn"], "")
+        self.carrier.get_ttn_status.return_value["LightReturnNumber"] = SAMPLE["result"]["ttn"]
+        response = self.post(route, {"reverse_ttn": reverse, "chat_id": USER})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json["linked"])
+        self.assertEqual(response.json["case"]["reverse_ttn"], reverse)
+        details = self.get("/api/safar/returns/" + case_id)
+        self.assertEqual(details.json["case"]["events"][-1]["event_type"], "verified_easy_return_link")
+        self.assertEqual(self.post(route, {"reverse_ttn": reverse, "chat_id": USER}).json["linked"], False)
+        self.assertEqual(self.post(route, {"reverse_ttn": reverse, "chat_id": GROUP}, csrf=False).status_code, 403)
+        self.assertEqual(self.post(route, {"reverse_ttn": "1234", "chat_id": USER}).status_code, 422)
+        self.other_carrier.get_ttn_status.assert_not_called()
+        self.carrier.create_ttn.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
