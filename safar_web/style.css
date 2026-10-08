@@ -91,3 +91,9 @@ button:focus-visible,textarea:focus-visible{outline:2px solid var(--volt);outlin
 .radar-name small,.radar-status small{font-size:11px;color:#bac2c8}
 .radar-status{text-align:right;flex:0 1 46%}
 @media(max-width:380px){.radar-row{padding:12px;gap:9px}.radar-status{flex:0 1 48%}.radar-name strong,.radar-status strong{font-size:11px}}
+
+/* Verified Easy Return association: intentional single-field exception UI. */
+#easyReturnLinkForm{display:grid;gap:12px}
+#easyReturnLinkForm label{font-size:13px;color:#d3dce4;font-weight:700}
+#reverseTtn{width:100%;min-height:50px;background:#10161b;color:#f5f7fa;border:1px solid #526351;border-radius:11px;padding:12px 16px;letter-spacing:.08em;font-size:16px}
+#reverseTtn:focus-visible{outline:2px solid var(--volt);outline-offset:2px}
