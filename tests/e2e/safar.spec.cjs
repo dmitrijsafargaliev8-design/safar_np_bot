@@ -66,10 +66,14 @@ test('warehouse receipt requires physical confirmation and preserves finance', a
   await page.locator('#returnReason').selectOption('refused_by_recipient');
   await page.locator('#returnForm button[type="submit"]').click();
   await expect(page.locator('.return-case-card')).toBeVisible();
-  await page.locator('[data-action="open-warehouse"]').first().click();
-  await page.locator('#warehouseTtn').fill('20400000000001');
-  await page.locator('#warehouseAcknowledged').check();
-  await page.locator('#warehouseReceiptForm button[type="submit"]').click();
+  // Synthetic local server remains alive across Playwright retries. An
+  // already-received return must remain idempotently completed.
+  if (await page.locator('[data-action="open-warehouse"]').count()) {
+    await page.locator('[data-action="open-warehouse"]').first().click();
+    await page.locator('#warehouseTtn').fill('20400000000001');
+    await page.locator('#warehouseAcknowledged').check();
+    await page.locator('#warehouseReceiptForm button[type="submit"]').click();
+  }
   await expect(page.locator('.return-case-card')).toContainText('Прийнято на складі');
   await expect(page.locator('.return-case-card')).toContainText('Фінанси не підтверджені');
 });
