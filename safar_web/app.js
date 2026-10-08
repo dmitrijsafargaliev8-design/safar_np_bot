@@ -64,7 +64,7 @@ const badge = status => `<span class="state state-${['collecting','processing','
 const tabs = [['home','home','home'],['orders','orders','orders'],['shipments','shipments','truck'],['returns','returns','refresh'],['senders','senders','users'],['settings','settings','settings']];
 const view = {tab:'home',returnTab:'orders',filter:'all',search:'',sender:'',period:'all',sort:'updated_desc',chatId:null,scopes:[],selected:null,orders:[],counts:{},pagination:{},authed:false,loading:true,listLoading:false,moreLoading:false,error:'',detailLoading:false,detailError:'',detailCache:{},tracking:{},trackingLoading:false,trackingError:'',senders:null,sendersLoading:false,sendersError:'',analytics:null,analyticsLoading:false,analyticsError:'',csrf:'',expiresAt:null,lastSync:null,offline:!navigator.onLine || document.body.dataset.offlineShell === 'true',editing:false,editDraft:null,editError:'',saving:false,pair:null,pairBusy:false,pairError:'',photoErrors:new Set(),photoAttempts:{},photo:null,installPrompt:null,scopeLoading:false};
 view.returnCases = []; view.returnTracking = {}; view.returnTrackingBusy = {}; view.returnTrackingErrors = {}; view.returnsLoading = false; view.returnsError = '';
-view.autoIntakeEnabled = false; view.radarLoading = false; view.radarErrors = {};
+view.carrierEvents = {}; view.autoIntakeEnabled = false; view.radarLoading = false; view.radarErrors = {};
 let requestSequence = 0, sessionEpoch = 0, expiryTimer = null, listController = null, searchTimer = null, pairingTimer = null, pairSequence = 0;
 let sessionChannel;
 try { sessionChannel = new BroadcastChannel('safar-session'); sessionChannel.onmessage = e => { if (e.data === 'logout') clearSession(); }; } catch (_) {}
@@ -169,7 +169,10 @@ function trackingPanel(order) {
 function historyPanel(order) {
  const receipts = Array.isArray(order.receipts) ? order.receipts : [];
  const history = Array.isArray(order.history) ? order.history : [];
- return `<div class="detail-block"><h3>${esc(t('receiptHistory'))}</h3>${receipts.length ? `<ol class="timeline">${receipts.map(receipt => `<li><span class="timeline-dot"></span><div><strong class="selectable">${esc(receipt.ttn || '—')}</strong><p>${esc(receipt.sender_profile || order.sender_profile || '—')} · ${esc(dateStr(receipt.deleted_at || receipt.created_at || receipt.created || receipt.updated_at))}</p><span class="state ${receipt.state === 'deleted' || receipt.status === 'deleted' || receipt.deleted ? 'state-deleted' : 'state-created'}">${esc(receipt.state === 'deleted' || receipt.status === 'deleted' || receipt.deleted ? t('deleted') : t('created'))}</span></div></li>`).join('')}</ol>` : `<p class="muted-text">${esc(t('noHistory'))}</p>`}${history.length ? `<div class="divider"></div><h3>${esc(t('activityHistory'))}</h3><ol class="timeline">${history.slice(-12).reverse().map(event => `<li><span class="timeline-dot"></span><div><strong>${esc(stateName(event.state || event.status) || event.action || '—')}</strong><p>${esc(dateStr(event.deleted_at || event.at || event.created_at || event.time))}</p>${event.ttn ? `<span class="selectable">${esc(event.ttn)}</span>` : ''}</div></li>`).join('')}</ol>` : ''}</div>`;
+ const carrier = view.carrierEvents[order.id]?.timeline;
+ const carrierEntries=Array.isArray(carrier?.events)?carrier.events:[];
+ const carrierMarkup=carrierEntries.length ? `<div class="divider"></div><h3>${esc(language==="ru"?"История статусов перевозчика":"Історія статусів перевізника")}</h3><p class="muted-text">${esc(language==="ru"?"Подтверждённые наблюдения Новой Почты; не означают приёмку складом или выплату.":"Перевірені спостереження Нової пошти; не підтверджують приймання складом або виплату.")}</p><ol class="timeline">${carrierEntries.map(event=>`<li><span class="timeline-dot"></span><strong>${esc(event.status)}</strong><p>${esc(dateStr(event.at))} · NOVA POSHTA</p></li>`).join("")}</ol>` : "";
+ return `<div class="detail-block"><h3>${esc(t('receiptHistory'))}</h3>${receipts.length ? `<ol class="timeline">${receipts.map(receipt => `<li><span class="timeline-dot"></span><div><strong class="selectable">${esc(receipt.ttn || '—')}</strong><p>${esc(receipt.sender_profile || order.sender_profile || '—')} · ${esc(dateStr(receipt.deleted_at || receipt.created_at || receipt.created || receipt.updated_at))}</p><span class="state ${receipt.state === 'deleted' || receipt.status === 'deleted' || receipt.deleted ? 'state-deleted' : 'state-created'}">${esc(receipt.state === 'deleted' || receipt.status === 'deleted' || receipt.deleted ? t('deleted') : t('created'))}</span></div></li>`).join('')}</ol>` : `<p class="muted-text">${esc(t('noHistory'))}</p>`}${history.length ? `<div class="divider"></div><h3>${esc(t('activityHistory'))}</h3><ol class="timeline">${history.slice(-12).reverse().map(event => `<li><span class="timeline-dot"></span><div><strong>${esc(stateName(event.state || event.status) || event.action || '—')}</strong><p>${esc(dateStr(event.deleted_at || event.at || event.created_at || event.time))}</p>${event.ttn ? `<span class="selectable">${esc(event.ttn)}</span>` : ''}</div></li>`).join('')}</ol>` : ''}${carrierMarkup}</div>`;
 }
 function safeSource(value) { return typeof value === 'string' && /^https:\/\/t\.me\/c\/\d+\/\d+$/.test(value) ? value : ''; }
 function detail() {
@@ -227,7 +230,7 @@ function messageFor(status) { return t(status === 401 ? 'expired' : status === 4
 function clearSession(message='') {
  sessionEpoch++; pairSequence++; clearTimeout(pairingTimer); clearTimeout(searchTimer); clearTimeout(expiryTimer); view.saving = false;
  view.listLoading = false; view.moreLoading = false; view.detailLoading = false; view.trackingLoading = false; view.sendersLoading = false; view.analyticsLoading = false; view.error = ''; view.detailError = ''; view.trackingError = ''; view.sendersError = ''; view.analyticsError = '';
- view.authed = false; view.autoIntakeEnabled = false; view.returnCases = []; view.returnTracking = {}; view.returnTrackingErrors = {}; view.returnTrackingBusy = {}; view.returnsError = ''; view.csrf = ''; view.expiresAt = null; view.orders = []; view.counts = {}; view.detailCache = {}; view.tracking = {}; view.radarErrors = {}; view.radarLoading = false; view.selected = null; view.editDraft = null; view.editing = false; view.senders = null; view.analytics = null; view.lastSync = null; view.scopes = []; view.chatId = null; view.loading = false; view.pair = null; view.pairBusy = false; view.pairError = message; closeDialog(); for (const dialog of document.querySelectorAll('dialog')) { dialog.replaceChildren(); dialog.correction = null; } view.photoErrors.clear(); view.photoAttempts = {}; listController?.abort(); requestSequence++; render();
+ view.authed = false; view.carrierEvents = {}; view.autoIntakeEnabled = false; view.returnCases = []; view.returnTracking = {}; view.returnTrackingErrors = {}; view.returnTrackingBusy = {}; view.returnsError = ''; view.csrf = ''; view.expiresAt = null; view.orders = []; view.counts = {}; view.detailCache = {}; view.tracking = {}; view.radarErrors = {}; view.radarLoading = false; view.selected = null; view.editDraft = null; view.editing = false; view.senders = null; view.analytics = null; view.lastSync = null; view.scopes = []; view.chatId = null; view.loading = false; view.pair = null; view.pairBusy = false; view.pairError = message; closeDialog(); for (const dialog of document.querySelectorAll('dialog')) { dialog.replaceChildren(); dialog.correction = null; } view.photoErrors.clear(); view.photoAttempts = {}; listController?.abort(); requestSequence++; render();
 }
 async function jsonRequest(url,options={}) {
  if (!navigator.onLine || view.offline) { const error = new Error(t('networkError')); error.status = 0; throw error; }
@@ -275,10 +278,21 @@ async function fetchOrders(append=false) {
  } catch (error) { if (error.name !== 'AbortError' && sequence === requestSequence) view.error = error.message; }
  finally { if (sequence === requestSequence) { view.listLoading = false; view.moreLoading = false; if (['home','orders','shipments'].includes(view.tab) && !view.selected) render(); } }
 }
+async function fetchCarrierEvents(id) {
+ const epoch=sessionEpoch,chat=view.chatId;
+ if(demo || view.offline) return;
+ try {
+  const data=await jsonRequest(scopedURL('/api/safar/orders/'+encodeURIComponent(id)+'/carrier-events'));
+  if(epoch===sessionEpoch && chat===view.chatId && view.selected===id) {
+   view.carrierEvents[id]=data;
+   render();
+  }
+ } catch (_) { /* Historical migration may not yet exist; live tracking remains available. */ }
+}
 async function fetchDetail(id) {
  const epoch = sessionEpoch;
  view.detailLoading = true; view.detailError = ''; render();
- try { const data = demo ? {order:demoOrders.find(o => o.id === id)} : await jsonRequest(scopedURL('/api/safar/orders/' + encodeURIComponent(id))); if (epoch === sessionEpoch && view.selected === id) { view.detailCache[id] = data.order; view.detailError = ''; } }
+ try { const data = demo ? {order:demoOrders.find(o => o.id === id)} : await jsonRequest(scopedURL('/api/safar/orders/' + encodeURIComponent(id))); if (epoch === sessionEpoch && view.selected === id) { view.detailCache[id] = data.order; view.detailError = ''; if(data.order?.ttn) fetchCarrierEvents(id); } }
  catch (error) { if (epoch === sessionEpoch && view.selected === id) view.detailError = error.message; }
  finally { if (epoch === sessionEpoch && view.selected === id) { view.detailLoading = false; render(); } }
 }
