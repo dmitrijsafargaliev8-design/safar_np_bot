@@ -505,6 +505,79 @@ class SafarAppTests(unittest.TestCase):
         self.assertNotEqual(first["key"], later["key"])
         self.carrier.create_ttn.assert_not_called()
 
+    def test_photo_intake_is_private_scoped_idempotent_and_does_not_duplicate_ttn(self):
+        from io import BytesIO
+        from types import SimpleNamespace
+        self.login()
+        path = "/api/safar/orders/intake/photo"
+        headers = {"Origin": BASE, "X-CSRF-Token": self.csrf}
+        text = "ФИО: Іван Іваненко\nТелефон: 0500000001\nГород: Одеса\nОтделение: 4\nОценка: 1600"
+        request_id = "private-photo-request-000001"
+        self.telegram.send_photo.return_value = SimpleNamespace(
+            photo=[SimpleNamespace(file_id="safe-private-telegram-file",
+                    file_unique_id="private-image-sha", width=600, height=800)])
+        fields = lambda: {"chat_id": str(USER), "text": text,
+                          "request_id": request_id,
+                          "image": (BytesIO(JPEG), "sample.jpg", "image/jpeg")}
+        with patch.dict(os.environ, {"SAFAR_APP_AUTO_CREATE": "1",
+                                      "SAFAR_APP_MEDIA_INTAKE": "0"}):
+            self.assertEqual(self.client.post(path, base_url=BASE, headers=headers,
+                 data=fields(), content_type="multipart/form-data").status_code, 503)
+        with patch.dict(os.environ, {"SAFAR_APP_AUTO_CREATE": "1",
+                                      "SAFAR_APP_MEDIA_INTAKE": "1"}):
+            result = self.client.post(path, base_url=BASE, headers=headers,
+                 data=fields(), content_type="multipart/form-data")
+            self.assertEqual(result.status_code, 202)
+            self.assertTrue(result.json["accepted"])
+            self.assertEqual(result.json["order"]["source"], "app")
+            self.assertEqual(len(result.json["order"]["photos"]), 1)
+            order_key = result.json["order"]["id"]
+            self.telegram.send_photo.assert_called_once()
+            self.assertEqual(self.telegram.send_photo.call_args.args[0], USER)
+            stored = self.pipeline._job(order_key)
+            self.assertIsNone(stored["anchor_id"])
+            self.assertEqual(stored["messages"][0]["photo"][0]["file_id"],
+                             "safe-private-telegram-file")
+            self.assertEqual(stored["source_text"], text)
+            self.assertEqual(len(stored["app_image_sha256"]), 64)
+            repeated = self.client.post(path, base_url=BASE, headers=headers,
+                data=fields(), content_type="multipart/form-data")
+            self.assertEqual(repeated.status_code, 200)
+            self.assertFalse(repeated.json["accepted"])
+            self.telegram.send_photo.assert_called_once()
+            self.assertEqual(self.client.post(path, base_url=BASE, headers=headers,
+                data={**fields(), "text": text + "\nchanged"},
+                content_type="multipart/form-data").status_code, 409)
+            self.assertEqual(self.pipeline._job(order_key)["state"], "collecting")
+            self.carrier.create_ttn.assert_not_called()
+            self.assertTrue(self.pipeline.tick())
+            self.assertEqual(self.pipeline._job(order_key)["state"], "created")
+            self.assertEqual(self.carrier.create_ttn.call_count, 1)
+
+    def test_photo_intake_never_uploads_untrusted_files_or_unavailable_ocr(self):
+        from io import BytesIO
+        self.login()
+        path = "/api/safar/orders/intake/photo"
+        headers = {"Origin": BASE, "X-CSRF-Token": self.csrf}
+        base = {"chat_id": str(USER), "request_id": "private-image-request-00002"}
+        def upload(blob, mime="image/jpeg", text=""):
+            return self.client.post(path, base_url=BASE, headers=headers,
+                data={**base, "text": text, "image": (BytesIO(blob), "screenshot.jpg", mime)},
+                content_type="multipart/form-data")
+        with patch.dict(os.environ, {"SAFAR_APP_AUTO_CREATE": "1",
+                                      "SAFAR_APP_MEDIA_INTAKE": "1",
+                                      "SAFAR_OCR_ENABLED": "0"}):
+            self.assertEqual(upload(JPEG).status_code, 422)
+            self.assertEqual(upload(b"fake-not-a-jpeg" * 2, text="Name: Sample").status_code, 415)
+            self.assertEqual(upload(JPEG, "image/png", text="Name: Sample").status_code, 415)
+            self.assertEqual(upload(JPEG, text="valid", mime="application/pdf").status_code, 415)
+            self.assertEqual(upload(JPEG, text="ok", mime="image/jpeg").status_code, 502)
+            self.telegram.send_photo.assert_called_once()
+            self.assertEqual(self.client.post(path, base_url=BASE,
+                 data={**base, "text": "valid", "image": (BytesIO(JPEG), "pic.jpg", "image/jpeg")},
+                 content_type="multipart/form-data").status_code, 403)
+            self.carrier.create_ttn.assert_not_called()
+
     def test_return_carrier_tracking_is_read_only_scoped_and_uses_original_sender(self):
         self.assertEqual(self.get("/api/safar/returns/not-found/tracking").status_code, 401)
         self.login()
