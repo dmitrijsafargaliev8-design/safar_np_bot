@@ -64,7 +64,7 @@ const badge = status => `<span class="state state-${['collecting','processing','
 const tabs = [['home','home','home'],['orders','orders','orders'],['shipments','shipments','truck'],['returns','returns','refresh'],['senders','senders','users'],['settings','settings','settings']];
 const view = {tab:'home',returnTab:'orders',filter:'all',search:'',sender:'',period:'all',sort:'updated_desc',chatId:null,scopes:[],selected:null,orders:[],counts:{},pagination:{},authed:false,loading:true,listLoading:false,moreLoading:false,error:'',detailLoading:false,detailError:'',detailCache:{},tracking:{},trackingLoading:false,trackingError:'',senders:null,sendersLoading:false,sendersError:'',analytics:null,analyticsLoading:false,analyticsError:'',csrf:'',expiresAt:null,lastSync:null,offline:!navigator.onLine || document.body.dataset.offlineShell === 'true',editing:false,editDraft:null,editError:'',saving:false,pair:null,pairBusy:false,pairError:'',photoErrors:new Set(),photoAttempts:{},photo:null,installPrompt:null,scopeLoading:false};
 view.returnCases = []; view.returnTracking = {}; view.returnTrackingBusy = {}; view.returnTrackingErrors = {}; view.returnsLoading = false; view.returnsError = '';
-view.carrierEvents = {}; view.autoIntakeEnabled = false; view.radarLoading = false; view.radarErrors = {};
+view.carrierEvents = {}; view.autoIntakeEnabled = false; view.mediaIntakeEnabled = false; view.ocrEnabled = false; view.radarLoading = false; view.radarErrors = {};
 let requestSequence = 0, sessionEpoch = 0, expiryTimer = null, listController = null, searchTimer = null, pairingTimer = null, pairSequence = 0;
 let sessionChannel;
 try { sessionChannel = new BroadcastChannel('safar-session'); sessionChannel.onmessage = e => { if (e.data === 'logout') clearSession(); }; } catch (_) {}
@@ -231,12 +231,12 @@ function messageFor(status) { return t(status === 401 ? 'expired' : status === 4
 function clearSession(message='') {
  sessionEpoch++; pairSequence++; clearTimeout(pairingTimer); clearTimeout(searchTimer); clearTimeout(expiryTimer); view.saving = false;
  view.listLoading = false; view.moreLoading = false; view.detailLoading = false; view.trackingLoading = false; view.sendersLoading = false; view.analyticsLoading = false; view.error = ''; view.detailError = ''; view.trackingError = ''; view.sendersError = ''; view.analyticsError = '';
- view.authed = false; view.carrierEvents = {}; view.autoIntakeEnabled = false; view.returnCases = []; view.returnTracking = {}; view.returnTrackingErrors = {}; view.returnTrackingBusy = {}; view.returnsError = ''; view.csrf = ''; view.expiresAt = null; view.orders = []; view.counts = {}; view.detailCache = {}; view.tracking = {}; view.radarErrors = {}; view.radarLoading = false; view.selected = null; view.editDraft = null; view.editing = false; view.senders = null; view.analytics = null; view.lastSync = null; view.scopes = []; view.chatId = null; view.loading = false; view.pair = null; view.pairBusy = false; view.pairError = message; closeDialog(); for (const dialog of document.querySelectorAll('dialog')) { dialog.replaceChildren(); dialog.correction = null; } view.photoErrors.clear(); view.photoAttempts = {}; listController?.abort(); requestSequence++; render();
+ view.authed = false; view.carrierEvents = {}; view.autoIntakeEnabled = false; view.mediaIntakeEnabled = false; view.ocrEnabled = false; view.returnCases = []; view.returnTracking = {}; view.returnTrackingErrors = {}; view.returnTrackingBusy = {}; view.returnsError = ''; view.csrf = ''; view.expiresAt = null; view.orders = []; view.counts = {}; view.detailCache = {}; view.tracking = {}; view.radarErrors = {}; view.radarLoading = false; view.selected = null; view.editDraft = null; view.editing = false; view.senders = null; view.analytics = null; view.lastSync = null; view.scopes = []; view.chatId = null; view.loading = false; view.pair = null; view.pairBusy = false; view.pairError = message; closeDialog(); for (const dialog of document.querySelectorAll('dialog')) { dialog.replaceChildren(); dialog.correction = null; } view.photoErrors.clear(); view.photoAttempts = {}; listController?.abort(); requestSequence++; render();
 }
 async function jsonRequest(url,options={}) {
  if (!navigator.onLine || view.offline) { const error = new Error(t('networkError')); error.status = 0; throw error; }
  const headers = {...options.headers};
- if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+ if (options.body !== undefined && !(options.body instanceof FormData)) headers['Content-Type'] = 'application/json';
  if (options.method && !['GET','HEAD'].includes(options.method) && view.csrf) headers['X-CSRF-Token'] = view.csrf;
  let response;
  try { response = await fetch(url,{credentials:'same-origin',cache:'no-store',redirect:'error',...options,headers}); }
@@ -313,7 +313,7 @@ async function fetchAnalytics() {
  } catch (error) { if (epoch === sessionEpoch) view.analyticsError = error.message; }
  finally { if (epoch === sessionEpoch) { view.analyticsLoading = false; if ((view.authed || demo) && view.tab === 'home' && !view.selected) render(); } }
 }
-function applySession(data) { view.autoIntakeEnabled = data.auto_intake_enabled === true; view.authed = true; view.csrf = data.csrf_token || ''; view.expiresAt = data.expires_at; view.chatId = data.chat_id ?? null; view.loading = false; view.pair = null; view.pairError = ''; clearTimeout(pairingTimer); clearTimeout(expiryTimer); const remaining = Number(data.expires_at) * 1000 - Date.now(); if (Number.isFinite(remaining)) expiryTimer = setTimeout(() => clearSession(t('expired')),Math.max(0,remaining)); }
+function applySession(data) { view.autoIntakeEnabled = data.auto_intake_enabled === true; view.mediaIntakeEnabled = data.media_intake_enabled === true; view.ocrEnabled = data.ocr_enabled === true; view.authed = true; view.csrf = data.csrf_token || ''; view.expiresAt = data.expires_at; view.chatId = data.chat_id ?? null; view.loading = false; view.pair = null; view.pairError = ''; clearTimeout(pairingTimer); clearTimeout(expiryTimer); const remaining = Number(data.expires_at) * 1000 - Date.now(); if (Number.isFinite(remaining)) expiryTimer = setTimeout(() => clearSession(t('expired')),Math.max(0,remaining)); }
 async function loadWorkspace() {
  const epoch = sessionEpoch;
  if (!demo) { try { const data = await jsonRequest('/api/safar/scopes'); if (epoch !== sessionEpoch) return; view.scopes = data.scopes || []; view.chatId = data.selected_chat_id ?? view.chatId; } catch (error) { if (epoch !== sessionEpoch || !view.authed) return; } }
@@ -400,18 +400,28 @@ function openIntake() {
  if (!window.crypto?.randomUUID) { toast(t("networkError")); return; }
  dialog.intakeRequestId = window.crypto.randomUUID().replace(/-/g,"");
  const available = !demo && view.authed && view.autoIntakeEnabled && !view.offline;
- dialog.innerHTML = `<div class="dialog-top"><div><div class="eyebrow">SAFAR / SMART INTAKE</div><h2 id="actionTitle">${esc(t("intakeTitle"))}</h2></div>${button("close-dialog",t("close"),"close",false,"icon-button")}</div><p class="muted-text">${esc(t("intakeHelp"))}</p><form id="intakeForm" autocomplete="off"><label for="intakeText">${esc(t("intakeSource"))}</label><textarea id="intakeText" name="source" rows="9" maxlength="8000" placeholder="${esc(t("intakeSource"))}" ${available ? "" : "disabled"}></textarea><p class="muted-text intake-hint">${esc(t("intakeImagesLater"))}</p>${available ? "" : `<div class="notice">${icon("shield")}${esc(demo ? t("demoNotice") : t("intakeDisabled"))}</div>`}<div id="intakeError" class="form-error" role="alert"></div><div class="form-actions"><button type="submit" class="button-primary" ${available ? "" : "disabled"}>${icon("orders")}${esc(t("intakeSubmit"))}</button>${button("close-dialog",t("cancel"),"close")}</div></form>`;
+ dialog.innerHTML = `<div class="dialog-top"><div><div class="eyebrow">SAFAR / SMART INTAKE</div><h2 id="actionTitle">${esc(t("intakeTitle"))}</h2></div>${button("close-dialog",t("close"),"close",false,"icon-button")}</div><p class="muted-text">${esc(t("intakeHelp"))}</p><form id="intakeForm" autocomplete="off"><label for="intakeText">${esc(t("intakeSource"))}</label><textarea id="intakeText" name="source" rows="9" maxlength="8000" placeholder="${esc(t("intakeSource"))}" ${available ? "" : "disabled"}></textarea><p class="muted-text intake-hint">${view.mediaIntakeEnabled ? esc(language==="ru"?"Фото сохраняется в вашем личном чате Telegram-бота SAFAR. Максимум 2 МБ (JPG/PNG). Для скриншота без текста требуется включённый OCR.":"Фото зберігається у вашому особистому чаті Telegram-бота SAFAR. До 2 МБ (JPG/PNG). Для скриншота без тексту потрібен увімкнений OCR.") : esc(t("intakeImagesLater"))}</p>${view.mediaIntakeEnabled ? `<label for="intakeImage">${esc(language==="ru"?"Фото товара или скриншот (необязательно)":"Фото товару або скриншот (необов’язково)")}</label><input id="intakeImage" type="file" name="image" accept="image/jpeg,image/png" ${available?"":"disabled"}>`:""}${available ? "" : `<div class="notice">${icon("shield")}${esc(demo ? t("demoNotice") : t("intakeDisabled"))}</div>`}<div id="intakeError" class="form-error" role="alert"></div><div class="form-actions"><button type="submit" class="button-primary" ${available ? "" : "disabled"}>${icon("orders")}${esc(t("intakeSubmit"))}</button>${button("close-dialog",t("cancel"),"close")}</div></form>`;
  openDialog(dialog); document.getElementById("intakeText")?.focus({preventScroll:true});
 }
 async function submitIntake() {
  const dialog=document.getElementById("actionDialog"), input=document.getElementById("intakeText");
  const errorBox=document.getElementById("intakeError"), rawText=input?.value || "";
- if (!rawText.trim()) { if(errorBox) errorBox.textContent=t("intakeEmpty"); return; }
+ const image=document.getElementById("intakeImage")?.files?.[0];
+ if (!rawText.trim() && !image) { if(errorBox) errorBox.textContent=t("intakeEmpty"); return; }
+ if (image && (!view.mediaIntakeEnabled || !["image/png","image/jpeg"].includes(image.type) || image.size>2*1024*1024)) {
+  if(errorBox) errorBox.textContent=t("validation"); return;
+ }
+ if(image && !rawText.trim() && !view.ocrEnabled) {
+  if(errorBox) errorBox.textContent=language==="ru"?"Для фото без подписи требуется OCR. Добавьте текст заказа.":"Для фото без підпису потрібен OCR. Додайте текст замовлення.";return;
+ }
  if (view.saving || !view.autoIntakeEnabled || demo || view.offline) return;
  const epoch=sessionEpoch;
  view.saving=true; for(const el of dialog.querySelectorAll("button")) el.disabled=true;
  try {
-  const data=await jsonRequest("/api/safar/orders/intake",{method:"POST",body:JSON.stringify({text:rawText,request_id:dialog.intakeRequestId,chat_id:view.chatId})});
+  const body=image?new FormData():null;
+  if(body) {body.set("text",rawText);body.set("request_id",dialog.intakeRequestId);body.set("chat_id",String(view.chatId));body.set("image",image,image.name);}
+  const data=await jsonRequest(image?"/api/safar/orders/intake/photo":"/api/safar/orders/intake",
+   {method:"POST",body:body||JSON.stringify({text:rawText,request_id:dialog.intakeRequestId,chat_id:view.chatId})});
   if(epoch!==sessionEpoch) return;
   view.saving=false; closeDialog(); toast(t(data.accepted ? "intakeQueued" : "intakeExisting"));
   view.selected=null; view.tab="orders"; view.search=""; view.filter="all"; view.orders=[];
