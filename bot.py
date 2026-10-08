@@ -6,6 +6,7 @@ import math
 import threading
 
 from access_policy import AccessPolicy
+from sender_profiles import SenderProfiles
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
@@ -61,9 +62,10 @@ if not NOVA_POSHTA_API_KEY:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
-RELEASE_VERSION = "2026.10.08-operations-v2-rc1"
+RELEASE_VERSION = "2026.10.08-smart-edits-senders-rc2"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) if TELEGRAM_BOT_TOKEN else None
 np_client = NovaPoshtaClient(NOVA_POSHTA_API_KEY) if NOVA_POSHTA_API_KEY else None
+sender_profiles = SenderProfiles(np_client) if np_client else None
 
 def _access_permits(chat_id, user_id):
     """Apply both legacy chat restrictions and the stricter actor policy."""
@@ -547,6 +549,7 @@ BOT_COMMANDS = (
     ("orders", "Мои последние 10 заказов"),
     ("queue", "Заказы в очереди и с ошибками"),
     ("stats", "Статистика обработки заказов"),
+    ("sender", "Выбрать профиль отправителя"),
     ("whoami", "Мой Telegram ID для настройки доступа"),
     ("track", "Проверить статус ТТН"),
     ("retry", "Повторить заказ или пересоздать удалённую ТТН"),
@@ -572,6 +575,8 @@ HELP_TEXT = (
     "Оценка — объявленная стоимость. Наложка включается только отдельной строкой «Наложка 1600».\n\n"
     "Если нужна правка, ответь на сообщение с ошибкой полным исправленным заказом: фото сохранятся.\n"
     "Для повтора ответь /retry. Если прежняя ТТН удалена в Новой почте, бот создаст новую; действующую повторно не создаёт.\n\n"
+    "Для исправления одного поля ответь на карточку: Телефон: +380... или Оценка: 1600.\n"
+    "/sender — текущий профиль; /sender ID — переключить для будущих заказов.\n"
     "/example — образец заказа.\n/menu — все команды."
 )
 _telegram_commands = []
@@ -718,6 +723,37 @@ def register_command_handlers(telegram_bot):
             "Показаны записи текущего пользователя и чата, не финансовая выручка.",
         )
 
+    @telegram_bot.message_handler(commands=["sender"])
+    def sender_handler(message):
+        if not _is_allowed(message):
+            return
+        pipeline = get_pipeline()
+        if not pipeline or not sender_profiles:
+            telegram_bot.reply_to(message, "Профили отправителей недоступны.")
+            return
+        profiles = sender_profiles.available()
+        current = pipeline.sender_preference(message.chat.id, message.from_user.id)
+        parts = (message.text or "").split(None, 1)
+        if len(parts) == 1:
+            lines = ["📦 ОТПРАВИТЕЛЬ",
+                     f"Текущий: {profiles.get(current, 'профиль недоступен')} ({current})",
+                     "Доступные профили:"]
+            lines += [f"• {pid} — {label}" for pid, label in profiles.items()]
+            lines += ["Выбрать для НОВЫХ заказов: /sender ID.",
+                      "Для другого человека сначала настрой подтверждённые реквизиты в Render."]
+            telegram_bot.reply_to(message, "\n".join(lines))
+            return
+        profile_id = parts[1].strip().lower()
+        if profile_id not in profiles:
+            telegram_bot.reply_to(message, "Неизвестный профиль. Напиши /sender для списка.")
+            return
+        # The preferences table is durable and the choice is scoped to one operator.
+        pipeline.set_sender_preference(message.chat.id, message.from_user.id, profile_id)
+        telegram_bot.reply_to(
+            message, f"✅ Отправитель для будущих заказов: {profiles[profile_id]} ({profile_id}).\n"
+                     "Ранее пересланные и оформленные заказы не изменены."
+        )
+
     @telegram_bot.message_handler(commands=["track"])
     def track_handler(message):
         if not _is_allowed(message):
@@ -790,12 +826,13 @@ def register_command_handlers(telegram_bot):
                 text = (
                     "✏️ Исправить оформленную ТТН:\n"
                     "1. Сначала удали действующую ТТН в Новой почте.\n"
-                    "2. Ответь НА ЭТУ карточку полным исправленным заказом.\n"
+                    "2. Ответь НА ЭТУ карточку: Телефон: +380... или Оценка: 1600.\n"
                     "3. Отправь /retry ответом на карточку.\n\n"
                     "Пока удаление не подтверждено НП, бот не создаст вторую ТТН. Фото сохранятся."
                 )
             else:
-                text = "✏️ Ответь НА ЭТУ карточку полным исправленным заказом. Фотографии сохранятся."
+                text = ("✏️ Ответь НА ЭТУ карточку полным заказом или одним полем, "
+                        "например: Телефон: +380... Фото сохранятся.")
             telegram_bot.send_message(text=text, **reply)
         elif action == "history":
             records = (history or {}).get("history") or []
@@ -873,6 +910,7 @@ def get_pipeline():
             _pipeline = OrderPipeline(
                 os.getenv("STATE_DB_PATH", ".state/orders.sqlite3"), parse_order, np_client, bot,
                 database_url=database_url or None,
+                sender_clients=sender_profiles.clients if sender_profiles else None,
             )
         return _pipeline
 
@@ -1066,7 +1104,21 @@ def webhook():
         else:
             pipeline.remember_update(update_id)
         return jsonify(ok=True)
-    except (KeyError, TypeError, ValueError):
+    except ValueError as exc:
+        # A signed, authorized correction with an invalid field should receive
+        # actionable feedback rather than disappearing as a Telegram 400.
+        if isinstance(message, dict) and _access_permits(
+            (message.get("chat") or {}).get("id"), (message.get("from") or {}).get("id")
+        ):
+            try:
+                bot.send_message(chat_id, "⚠️ Исправление не принято: " + str(exc)[:350])
+                pipeline.remember_update(update_id)
+                return jsonify(ok=True, validation_error=True)
+            except Exception:
+                logger.exception("Could not acknowledge invalid correction")
+                return jsonify(error="temporary message failure"), 503
+        return jsonify(error="invalid message"), 400
+    except (KeyError, TypeError):
         logger.warning("Malformed Telegram update id=%s", update_id)
         return jsonify(error="invalid message"), 400
     except Exception:

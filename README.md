@@ -1,5 +1,55 @@
 # SAFAR NP BOT
 
+## Smart corrections and multi-sender operations (candidate)
+
+**Single-field corrections:** Reply to a previously issued order card with
+`Телефон: +380...`, `Оценка: 1600`, `Наложка: 0`, `Город: ...`,
+`Отделение: 7` or `Вес: 1.5`. You may correct up to two named fields
+in one reply. Photos and the original immutable shipment receipt are retained.
+For a **created TTN**, the correction is only staged; first delete that TTN in
+Nova Poshta, then reply `/retry` to its card. A new TTN is blocked until
+the carrier confirms deletion. A full corrected order remains supported.
+Incomplete orders without a saved parsed record still require a complete order.
+
+**Sender switching:** `/sender` lists available configured profiles and your
+current profile in that chat. `/sender other` selects a profile for **future**
+forwarded orders from that exact authorized Telegram user in that chat.
+Selection is persisted in the private `safar_orders.sender_preferences` table,
+never in local memory. Already forwarded orders keep their original sender
+assignment; the old TTN is always queried with its original sender client.
+A profile ID unavailable at runtime fails closed (no fallback to primary).
+
+A second person's sender identity is NOT activated until their authorized
+Nova Poshta account and exact official sender refs are configured. On Render,
+set a server-only `NP_SENDER_PROFILES_JSON`, e.g.:
+
+```json
+{
+  "other": {
+    "label": "Второй отправитель",
+    "api_key_env": "NP_SECONDARY_API_KEY",
+    "sender_ref": "REPLACE_WITH_OFFICIAL_UUID",
+    "contact_ref": "REPLACE_WITH_OFFICIAL_UUID",
+    "address_ref": "REPLACE_WITH_OFFICIAL_UUID",
+    "city_ref": "REPLACE_WITH_OFFICIAL_UUID",
+    "phone": "+380XXXXXXXXX"
+  }
+}
+```
+
+Store the **actual secret API key** only in Render variable
+`NP_SECONDARY_API_KEY`, not JSON, code, chat or commit. If the secondary
+identity is legitimately associated with the existing NP API key,
+`api_key_env` may be omitted; ownership and sender refs still must be
+verified in NP. Never invent UUIDs or treat changing a phone alone as proof
+of authority to ship from another person's account.
+
+**Deployment order:** Apply `migrations/202610080002_sender_preferences.sql`
+with the Supabase project administrator before deploying the new version.
+Verify permissions and RLS; keep `STATE_REQUIRE_PERSISTENT=1`.
+Then deploy the existing Render service (never create a replacement).
+No existing TTNs, chat allowlists or sender refs are changed by this migration.
+
 ## Operations v2.0 candidate (safe rollout)
 
 Commands added in the `feat/safar-v2-access-and-operations-20261008` branch:

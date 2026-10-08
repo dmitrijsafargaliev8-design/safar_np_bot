@@ -59,6 +59,11 @@ class OrderJournal:
                 CREATE TABLE IF NOT EXISTS receipts (
                     identity TEXT PRIMARY KEY, state TEXT NOT NULL, result TEXT, updated REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS sender_preferences (
+                    chat_id INTEGER NOT NULL, owner_id INTEGER NOT NULL,
+                    profile_id TEXT NOT NULL, updated REAL NOT NULL,
+                    PRIMARY KEY (chat_id, owner_id)
+                );
             """)
             self._connection.commit()
 
