@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS safar_orders.receipts (
 );
 
 REVOKE ALL ON ALL TABLES IN SCHEMA safar_orders FROM PUBLIC;
-DO $
+DO $$
 DECLARE api_role TEXT;
 BEGIN
     FOR api_role IN SELECT rolname FROM pg_roles WHERE rolname IN ('anon', 'authenticated')
@@ -38,7 +38,7 @@ BEGIN
         EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA safar_orders FROM %I', api_role);
     END LOOP;
 END
-$;
+$$;
 GRANT USAGE ON SCHEMA safar_orders TO safar_bot;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA safar_orders TO safar_bot;
 
