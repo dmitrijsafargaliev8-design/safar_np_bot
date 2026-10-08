@@ -56,6 +56,83 @@ class ForwardedOrderParsingTests(unittest.TestCase):
                 self.assertEqual(order["warehouse"], "8")
 
 
+class InlineOblastAndCityTests(unittest.TestCase):
+    """Regression for screenshots where warehouse orders mention city + oblast."""
+
+    def test_real_smila_cherkasy_order_fields_do_not_bleed(self):
+        raw = (
+            "Кушнір Катерина Василівна\\n"
+            "м. Сміла, Черкаська обл\\n"
+            "Відділення 4\\n"
+            "0630451047\\n\\n"
+            "Оценка 3850"
+        )
+        order = parse_order(raw)
+        self.assertEqual(order["full_name"], "Кушнір Катерина Василівна")
+        self.assertEqual(order["city"], "Сміла")
+        self.assertEqual(order["area"], "Черкаська")
+        self.assertEqual(order["warehouse"], "4")
+        self.assertEqual(order["phone"], "380630451047")
+        self.assertEqual(order["cost"], 3850)
+        self.assertEqual(order["cod_amount"], 0)
+        self.assertEqual(order["settlement_type"], "місто")
+
+    def test_inline_oblast_city_reversed_and_no_comma(self):
+        for location in (
+            "м. Сміла, Черкаська обл",
+            "м.Сміла, Черкаська обл.",
+            "Черкаська обл, м. Сміла",
+            "Черкаська область, місто Сміла",
+            "м. Сміла Черкаська обл",
+        ):
+            with self.subTest(location=location):
+                raw = (
+                    "Кушнір Катерина Василівна\\n"
+                    + location + "\\nВідділення 4\\n0630451047\\nОценка 3850"
+                )
+                parsed = parse_order(raw)
+                self.assertEqual(parsed["city"], "Сміла")
+                self.assertEqual(parsed["area"], "Черкаська")
+                self.assertEqual(parsed["warehouse"], "4")
+
+    def test_separate_city_and_oblast_lines_still_work(self):
+        order = parse_order(
+            "Кушнір Катерина Василівна\\n"
+            "Черкаська область\\nм. Сміла\\n"
+            "Відділення 4\\n0630451047\\nОценка 3850"
+        )
+        self.assertEqual(order["city"], "Сміла")
+        self.assertEqual(order["area"], "Черкаська")
+
+    def test_geo_directory_confirms_exact_city_area_and_warehouse(self):
+        order = parse_order(
+            "Кушнір Катерина Василівна\\n"
+            "м. Сміла, Черкаська обл\\n"
+            "Відділення 4\\n0630451047\\nОценка 3850"
+        )
+        client = NovaPoshtaClient("test-key-not-real")
+        def fake_api(model, method, props):
+            self.assertEqual(model, "Address")
+            if method == "getCities":
+                self.assertEqual(props["FindByString"], "Сміла")
+                return [{"Ref": "smila-ref", "Description": "Сміла",
+                         "DescriptionRu": "Смела", "Area": "cherkasy-ref"}]
+            if method == "getAreas":
+                return [{"Ref": "cherkasy-ref", "Description": "Черкаська",
+                         "DescriptionRu": "Черкасская"}]
+            if method == "getWarehouses":
+                self.assertEqual(props["CityRef"], "smila-ref")
+                self.assertEqual(props["FindByString"], "4")
+                return [{"Ref": "branch-4", "Number": "4",
+                         "Description": "Відділення №4"}]
+            self.fail("Unexpected API operation: " + method)
+        client._call = Mock(side_effect=fake_api)
+        city_ref = client.get_city_ref(order["city"], area=order["area"], warehouse=order["warehouse"])
+        branch_ref = client.get_warehouse_ref(city_ref, order["warehouse"])
+        self.assertEqual((city_ref, branch_ref), ("smila-ref", "branch-4"))
+        self.assertNotIn("InternetDocument", [c.args[0] for c in client._call.call_args_list])
+
+
 class DeliverySelectionTests(unittest.TestCase):
     def _client(self):
         client = NovaPoshtaClient("fake-test-api-key")
