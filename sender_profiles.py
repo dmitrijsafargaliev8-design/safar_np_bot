@@ -29,10 +29,14 @@ class SenderProfiles:
         # secret. Discover a uniquely registered sender/contact/address via NP.
         # In particular, NEVER inherit NP_SENDER_* of the legacy default client.
         if env.get("NP_FOP_API_KEY", "").strip():
-            if "fop" in profiles:
-                raise NovaPoshtaError("Профиль fop задан одновременно вручную и через NP_FOP_API_KEY.")
             profiles = dict(profiles)
-            profiles["fop"] = {"label": "ФОП · основной кабинет", "api_key_env": "NP_FOP_API_KEY"}
+            if "fop" in profiles:
+                cfg = profiles["fop"]
+                if not isinstance(cfg, dict) or cfg.get("api_key_env", "NP_FOP_API_KEY") != "NP_FOP_API_KEY":
+                    raise NovaPoshtaError("Профиль fop должен использовать только NP_FOP_API_KEY.")
+                profiles["fop"] = {**cfg, "api_key_env": "NP_FOP_API_KEY"}
+            else:
+                profiles["fop"] = {"label": "ФОП · основной кабинет", "api_key_env": "NP_FOP_API_KEY"}
 
         required = ("sender_ref", "contact_ref", "address_ref", "city_ref", "phone")
         for profile_id, cfg in profiles.items():
