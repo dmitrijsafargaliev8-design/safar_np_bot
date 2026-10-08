@@ -71,6 +71,22 @@ class SmartOrderTests(unittest.TestCase):
         self.assertEqual(self.default.create_ttn.call_args.kwargs["phone"], "380500000002")
         self.assertNotIn("pending_edits", self.current())
 
+    def test_invalid_missing_field_can_be_repaired_with_one_reply(self):
+        incomplete = ORDER.replace("Оценка 1600", "")
+        self.pipe.ingest(message(1, caption=incomplete), 1)
+        self.drain()
+        self.assertEqual(self.current()["state"], "invalid")
+        self.default.create_ttn.assert_not_called()
+        card = self.mid
+        correction = message(2, text="Оценка: 1800", photo=False)
+        correction["reply_to_message"] = {"message_id": card}
+        self.pipe.ingest(correction, 2)
+        self.drain()
+        self.assertEqual(self.current()["state"], "created")
+        self.assertEqual(self.current()["order"]["cost"], 1800)
+        self.default.create_ttn.assert_called_once()
+        self.assertEqual(self.pipe.attachments(self.current())[0]["file_id"], "file-1")
+
     def test_two_field_patch_without_discarding_photos(self):
         self.pipe.ingest(message(1, caption=ORDER), 1)
         self.drain()
