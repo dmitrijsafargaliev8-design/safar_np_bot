@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import math
+import os
 import re
 from pathlib import Path
 from urllib.parse import quote
@@ -99,6 +100,7 @@ def public_order(job, *, include_detail=False):
         (stamp for stamp in dates if stamp), default=_number(job.get("updated_at"), 0))
     base = {
         "id": key,
+        "source": "app" if job.get("source") == "app" else "telegram",
         "state": job.get("state") if job.get("state") in STATES else "invalid",
         "created_at": created,
         "updated_at": _number(job.get("updated_at"), 0),
@@ -334,7 +336,8 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
     def session_response(session):
         response = make_response(jsonify(ok=True, user_id=session.user_id,
                                          csrf_token=session.csrf_token, expires_at=session.expires_at,
-                                         chat_id=default_scope(session.user_id)))
+                                         chat_id=default_scope(session.user_id),
+                                         auto_intake_enabled=os.getenv('SAFAR_APP_AUTO_CREATE') == '1'))
         response.set_cookie(COOKIE_NAME, session.token, max_age=SESSION_AGE, secure=True,
                             httponly=True, samesite="Lax", path="/api/safar")
         return no_store(response)
@@ -371,7 +374,8 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
     def session_status():
         session = current_session()
         return jsonify(ok=True, user_id=session.user_id, csrf_token=session.csrf_token,
-                       expires_at=session.expires_at, chat_id=default_scope(session.user_id))
+                       expires_at=session.expires_at, chat_id=default_scope(session.user_id),
+                       auto_intake_enabled=os.getenv("SAFAR_APP_AUTO_CREATE") == "1")
 
     @bp.post("/api/safar/logout")
     def logout():
@@ -404,6 +408,26 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
     def list_scopes():
         session = current_session()
         return jsonify(scopes=scopes(session.user_id), selected_chat_id=default_scope(session.user_id))
+
+    @bp.post("/api/safar/orders/intake")
+    def intake_text():
+        """Use the existing durable carrier queue, never create a TTN in HTTP."""
+        session = current_session()
+        require_same_origin(request)
+        require_csrf(request, session)
+        body = json_body()
+        if os.getenv("SAFAR_APP_AUTO_CREATE") != "1":
+            abort(503)
+        chat = current_scope(session, body)
+        try:
+            job, is_new = pipeline().ingest_app_text(chat, session.user_id,
+                                                      body.get("text"), body.get("request_id"))
+        except OrderCorrectionConflict:
+            abort(409)
+        except (ValueError, TypeError):
+            abort(422)
+        return jsonify(order=public_order(job), queued=job["state"] == "collecting",
+                       accepted=is_new, source="app"), 202 if is_new else 200
 
     @bp.get("/api/safar/returns")
     def return_cases():
