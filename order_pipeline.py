@@ -1,22 +1,20 @@
 """Journal incoming Telegram orders, collect albums and send shipment cards.
 
-SQLite survives worker restarts only when its filesystem survives. Production
-must place STATE_DB_PATH on persistent storage to survive host replacement.
+Postgres keeps the queue, photo identifiers and shipment receipts across host
+replacement. SQLite remains available for development or a persistent disk.
 """
 import hashlib
 import json
 import logging
-import os
-import sqlite3
 import threading
 import time
 from datetime import datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from telebot import types
 
 from np_client import NovaPoshtaError, NovaPoshtaTemporaryError, NovaPoshtaUncertainError
+from order_journal import OrderJournal
 
 logger = logging.getLogger(__name__)
 
@@ -26,39 +24,15 @@ def _json(value):
 
 
 class OrderPipeline:
-    def __init__(self, path, parser, client, bot, *, album_wait=3.0, clock=time.time):
+    def __init__(self, path, parser, client, bot, *, album_wait=3.0, clock=time.time, database_url=None):
         self.parser, self.client, self.bot = parser, client, bot
         self.album_wait, self.clock = album_wait, clock
         self.lock = threading.RLock()
         self.wakeup = threading.Event()
         self.stop = threading.Event()
         self.thread = None
-        if path != ":memory:":
-            parent = Path(path).resolve().parent
-            parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.db = sqlite3.connect(path, check_same_thread=False, timeout=10)
-        self.db.row_factory = sqlite3.Row
-        if path != ":memory:":
-            os.chmod(path, 0o600)
-        self.db.executescript("""
-            PRAGMA journal_mode=WAL;
-            PRAGMA synchronous=FULL;
-            CREATE TABLE IF NOT EXISTS updates (id INTEGER PRIMARY KEY, at REAL NOT NULL);
-            CREATE TABLE IF NOT EXISTS jobs (
-                key TEXT PRIMARY KEY, chat_id INTEGER NOT NULL, owner_id INTEGER NOT NULL,
-                state TEXT NOT NULL, due REAL NOT NULL, updated REAL NOT NULL, body TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS jobs_due ON jobs(state, due);
-            CREATE TABLE IF NOT EXISTS messages (
-                chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL, key TEXT NOT NULL,
-                PRIMARY KEY (chat_id, message_id)
-            );
-            CREATE TABLE IF NOT EXISTS receipts (
-                identity TEXT PRIMARY KEY, state TEXT NOT NULL, result TEXT, updated REAL NOT NULL
-            );
-        """)
-        self.db.commit()
-        self._recover()
+        self.db = OrderJournal(path, database_url)
+        self._recovered_epoch = 0
 
     def _recover(self):
         with self.lock, self.db:
@@ -70,7 +44,9 @@ class OrderPipeline:
 
     def _write(self, job):
         self.db.execute(
-            "INSERT OR REPLACE INTO jobs VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO jobs VALUES (?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET "
+            "chat_id=excluded.chat_id, owner_id=excluded.owner_id, state=excluded.state, "
+            "due=excluded.due, updated=excluded.updated, body=excluded.body",
             (job["key"], job["chat_id"], job["owner_id"], job["state"], job["due"], self.clock(), _json(job)),
         )
 
@@ -84,7 +60,7 @@ class OrderPipeline:
 
     def remember_update(self, update_id):
         with self.lock, self.db:
-            self.db.execute("INSERT OR IGNORE INTO updates VALUES (?,?)", (update_id, self.clock()))
+            self.db.execute("INSERT INTO updates VALUES (?,?) ON CONFLICT(id) DO NOTHING", (update_id, self.clock()))
 
     def ingest(self, message, update_id, *, edited=False, retry=False):
         """One transaction saves the entire message before acknowledging Telegram."""
@@ -143,7 +119,7 @@ class OrderPipeline:
             if job["state"] == "processing" and (linked or edited):
                 job["notice"] = "Исправление пришло во время создания ТТН; проверь данные готовой накладной."
             self._write(job)
-            self.db.execute("INSERT OR REPLACE INTO messages VALUES (?,?,?)", (chat_id, message_id, key))
+            self.db.execute("INSERT INTO messages VALUES (?,?,?) ON CONFLICT(chat_id,message_id) DO UPDATE SET key=excluded.key", (chat_id, message_id, key))
             self.db.execute("INSERT INTO updates VALUES (?,?)", (update_id, self.clock()))
         self.wakeup.set()
         return True
@@ -322,14 +298,20 @@ class OrderPipeline:
             sent.append(self.bot.send_message(text=text[:4096], **kwargs))
         with self.lock, self.db:
             for message in sent:
-                self.db.execute("INSERT OR REPLACE INTO messages VALUES (?,?,?)",
+                self.db.execute("INSERT INTO messages VALUES (?,?,?) ON CONFLICT(chat_id,message_id) DO UPDATE SET key=excluded.key",
                                 (job["chat_id"], message.message_id, job["key"]))
         job["notified"] = True
 
     def tick(self):
         """Process one due job; exposed for deterministic end-to-end tests."""
+        with self.lock:
+            if not self.db.acquire_worker():
+                return False
+            if self._recovered_epoch != self.db.worker_epoch:
+                self._recover()
+                self._recovered_epoch = self.db.worker_epoch
         with self.lock, self.db:
-            rows = self.db.execute("SELECT body FROM jobs WHERE due<=? AND state!='processing' AND (state='collecting' OR json_extract(body,'$.notified')=0) ORDER BY due LIMIT 1", (self.clock(),)).fetchall()
+            rows = self.db.execute(self.db.pending_query, (self.clock(),)).fetchall()
             job = next((json.loads(row["body"]) for row in rows
                         if json.loads(row["body"])["state"] == "collecting" or not json.loads(row["body"]).get("notified")), None)
             if job is None:
@@ -372,6 +354,8 @@ class OrderPipeline:
                 if self.tick():
                     continue
             except Exception:
+                # Recover a job left processing after a database interruption.
+                self._recovered_epoch = 0
                 logger.exception("Order journal processing failed")
             self.wakeup.wait(0.5)
             self.wakeup.clear()
