@@ -63,7 +63,7 @@ const stateName = status => t({collecting:'fresh',processing:'processing',create
 const badge = status => `<span class="state state-${['collecting','processing','created','invalid','failed','uncertain','deleted'].includes(status) ? status : 'invalid'}">${stateName(status)}</span>`;
 const tabs = [['home','home','home'],['orders','orders','orders'],['shipments','shipments','truck'],['returns','returns','refresh'],['senders','senders','users'],['settings','settings','settings']];
 const view = {tab:'home',returnTab:'orders',filter:'all',search:'',sender:'',period:'all',sort:'updated_desc',chatId:null,scopes:[],selected:null,orders:[],counts:{},pagination:{},authed:false,loading:true,listLoading:false,moreLoading:false,error:'',detailLoading:false,detailError:'',detailCache:{},tracking:{},trackingLoading:false,trackingError:'',senders:null,sendersLoading:false,sendersError:'',analytics:null,analyticsLoading:false,analyticsError:'',csrf:'',expiresAt:null,lastSync:null,offline:!navigator.onLine || document.body.dataset.offlineShell === 'true',editing:false,editDraft:null,editError:'',saving:false,pair:null,pairBusy:false,pairError:'',photoErrors:new Set(),photoAttempts:{},photo:null,installPrompt:null,scopeLoading:false};
-view.returnCases = []; view.returnsLoading = false; view.returnsError = '';
+view.returnCases = []; view.returnTracking = {}; view.returnTrackingBusy = {}; view.returnTrackingErrors = {}; view.returnsLoading = false; view.returnsError = '';
 view.autoIntakeEnabled = false;
 let requestSequence = 0, sessionEpoch = 0, expiryTimer = null, listController = null, searchTimer = null, pairingTimer = null, pairSequence = 0;
 let sessionChannel;
@@ -185,9 +185,14 @@ function senders() {
 }
 function scopeControl() { return view.scopes.length > 1 ? `<label class="scope-control"><span>${esc(t('scope'))}</span><select id="scopeFilter">${view.scopes.map(scope => `<option value="${esc(scope.chat_id)}" ${String(scope.chat_id) === String(view.chatId) ? 'selected' : ''}>${esc(scope.label)} · ${Number(scope.order_count) || 0}</option>`).join('')}</select></label>` : ''; }
 function returnScreen() {
- const cases = view.returnCases || [];
- const labels = {refused_by_recipient:language === 'ru' ? 'Отказ получателя' : 'Відмова одержувача',unclaimed:language === 'ru' ? 'Не забрали' : 'Не забрали',easy_return_after_delivery:language === 'ru' ? 'Лёгкий возврат' : 'Легке повернення',customer_exchange:language === 'ru' ? 'Обмен' : 'Обмін',other:language === 'ru' ? 'Другая причина' : 'Інша причина'};
- return `<div class="screen">${title('REVERSE / LOGISTICS',t('returns'),t('returnHelp'))}${view.returnsError ? errorPanel(view.returnsError,'refresh-returns') : ''}<div class="panel"><div class="panel-header"><h3>${esc(t('returns'))}</h3><span class="panel-small">${cases.length} ${esc(t('records'))}</span>${button('refresh-returns',t('refresh'),'refresh',view.returnsLoading || view.offline)}</div>${view.returnsLoading ? skeleton(3) : cases.length ? `<div class="orders-list">${cases.map(c=>`<button type="button" class="order-row" data-order="${esc(c.order_id)}"><div class="order-img">${icon('refresh')}</div><div class="order-main"><div class="order-name">${esc(labels[c.reason] || labels.other)}</div><div class="order-place selectable">${esc(c.outbound_ttn)}</div><div class="order-extra">${esc(dateStr(c.created_at))} · ${esc(c.sender_profile)}</div></div><div class="order-meta"><span class="state state-uncertain">${esc(t('returnUnknown'))}</span><span class="order-cod">${esc(t('returnWarehouse'))}</span></div></button>`).join('')}</div>` : empty(t('returnEmpty'),t('returnHelp'))}</div></div>`;
+ const cases=view.returnCases || [];
+ const labels={refused_by_recipient:language==="ru"?"Отказ получателя":"Відмова одержувача",unclaimed:language==="ru"?"Не забрали":"Не забрали",easy_return_after_delivery:language==="ru"?"Лёгкий возврат":"Легке повернення",customer_exchange:language==="ru"?"Обмен":"Обмін",other:language==="ru"?"Другая причина":"Інша причина"};
+ const item=c=>{
+  const tr=view.returnTracking[c.id], busy=!!view.returnTrackingBusy[c.id], err=view.returnTrackingErrors[c.id];
+  const latest=tr && tr.status ? `<div class="return-carrier" role="status"><div class="eyebrow">NOVA POSHTA / ${esc(t("checked"))} ${esc(dateStr(tr.checked_at))}</div><strong>${esc(tr.status)}</strong><p>${esc(t("returnWarehouse"))} · ${esc(language==="ru"?"Финансы не подтверждены":"Фінанси не підтверджені")}</p></div>` : `<p class="muted-text">${esc(t("returnUnknown"))}</p>`;
+  return `<article class="return-case-card"><div class="return-case-head"><div><div class="eyebrow">REVERSE / CASE</div><h3>${esc(labels[c.reason] || labels.other)}</h3><p class="selectable">${esc(c.outbound_ttn)}</p></div><span class="state state-uncertain">${esc(t("returnWarehouse"))}</span></div><div class="return-case-meta">${esc(dateStr(c.created_at))} · ${esc(c.sender_profile)}</div>${latest}${err ? `<p class="form-error" role="alert">${esc(err)}</p>` : ""}<div class="return-case-actions">${button("track-return",t(busy ? "trackingLoading" : "tracking"),"refresh",busy || view.offline,"button-quiet",`data-case-id="${esc(c.id)}"`)}<button class="button-quiet" data-order="${esc(c.order_id)}">${icon("arrow")}${esc(t("detail"))}</button></div></article>`;
+ };
+ return `<div class="screen">${title("REVERSE / LOGISTICS",t("returns"),t("returnHelp"))}${view.returnsError ? errorPanel(view.returnsError,"refresh-returns") : ""}<div class="panel"><div class="panel-header"><h3>${esc(t("returns"))}</h3><span class="panel-small">${cases.length} ${esc(t("records"))}</span>${button("refresh-returns",t("refresh"),"refresh",view.returnsLoading || view.offline)}</div>${view.returnsLoading ? skeleton(3) : cases.length ? `<div class="return-case-list">${cases.map(item).join("")}</div>` : empty(t("returnEmpty"),t("returnHelp"))}</div></div>`;
 }
 function settings() {
  return `<div class="screen">${title('SYSTEM / PREFERENCES',t('settings'),t('preferences'))}<div class="settings-grid"><div class="detail-block"><h3>${esc(t('session'))}</h3>${kv('SAFAR APP','v0.2 · PWA')}${kv(t('accessType'),esc(demo ? 'DEMO' : t('verified')))}${kv(t('scope'),esc(currentScope() || '—'))}${kv(t('expires'),demo ? '—' : esc(dateStr(view.expiresAt)))}${scopeControl()}${!demo ? `<div class="divider"></div>${button('logout',t('logout'),'logout')}` : ''}</div><div class="detail-block"><h3>${esc(t('locale'))}</h3><div class="language-options"><button type="button" class="filter-chip ${language === 'uk' ? 'active' : ''}" data-language="uk" aria-pressed="${language === 'uk'}" lang="uk">Українська</button><button type="button" class="filter-chip ${language === 'ru' ? 'active' : ''}" data-language="ru" aria-pressed="${language === 'ru'}" lang="ru">Русский</button></div><div class="divider"></div><h3>${esc(t('install'))}</h3><p class="muted-text">${esc(t('installHelp'))}</p>${view.installPrompt ? button('install',t('install'),'download',false,'button-primary') : ''}</div><div class="detail-block"><h3>${esc(t('diagnostics'))}</h3>${kv(t('status'),esc(connectionLabel()))}${kv(t('lastSync'),esc(dateStr(view.lastSync)))}${button('refresh',t('refresh'),'refresh',view.offline || view.listLoading)}</div><div class="detail-block privacy-card">${icon('shield')}<h3>PRIVATE BY DESIGN</h3><p class="muted-text">${esc(t('privacy'))}</p></div></div></div>`;
@@ -215,7 +220,7 @@ function messageFor(status) { return t(status === 401 ? 'expired' : status === 4
 function clearSession(message='') {
  sessionEpoch++; pairSequence++; clearTimeout(pairingTimer); clearTimeout(searchTimer); clearTimeout(expiryTimer); view.saving = false;
  view.listLoading = false; view.moreLoading = false; view.detailLoading = false; view.trackingLoading = false; view.sendersLoading = false; view.analyticsLoading = false; view.error = ''; view.detailError = ''; view.trackingError = ''; view.sendersError = ''; view.analyticsError = '';
- view.authed = false; view.autoIntakeEnabled = false; view.returnCases = []; view.returnsError = ''; view.csrf = ''; view.expiresAt = null; view.orders = []; view.counts = {}; view.detailCache = {}; view.tracking = {}; view.selected = null; view.editDraft = null; view.editing = false; view.senders = null; view.analytics = null; view.lastSync = null; view.scopes = []; view.chatId = null; view.loading = false; view.pair = null; view.pairBusy = false; view.pairError = message; closeDialog(); for (const dialog of document.querySelectorAll('dialog')) { dialog.replaceChildren(); dialog.correction = null; } view.photoErrors.clear(); view.photoAttempts = {}; listController?.abort(); requestSequence++; render();
+ view.authed = false; view.autoIntakeEnabled = false; view.returnCases = []; view.returnTracking = {}; view.returnTrackingErrors = {}; view.returnTrackingBusy = {}; view.returnsError = ''; view.csrf = ''; view.expiresAt = null; view.orders = []; view.counts = {}; view.detailCache = {}; view.tracking = {}; view.selected = null; view.editDraft = null; view.editing = false; view.senders = null; view.analytics = null; view.lastSync = null; view.scopes = []; view.chatId = null; view.loading = false; view.pair = null; view.pairBusy = false; view.pairError = message; closeDialog(); for (const dialog of document.querySelectorAll('dialog')) { dialog.replaceChildren(); dialog.correction = null; } view.photoErrors.clear(); view.photoAttempts = {}; listController?.abort(); requestSequence++; render();
 }
 async function jsonRequest(url,options={}) {
  if (!navigator.onLine || view.offline) { const error = new Error(t('networkError')); error.status = 0; throw error; }
@@ -427,6 +432,16 @@ async function fetchReturns() {
  catch (error) { if (epoch === sessionEpoch) view.returnsError=error.message; }
  finally { if (epoch === sessionEpoch) { view.returnsLoading=false; render(); } }
 }
+async function fetchReturnTracking(id) {
+ if (!id || view.returnTrackingBusy[id]) return;
+ const epoch=sessionEpoch;
+ view.returnTrackingBusy[id]=true; delete view.returnTrackingErrors[id]; render();
+ try {
+  const data=await jsonRequest(scopedURL("/api/safar/returns/" + encodeURIComponent(id) + "/tracking"));
+  if(epoch===sessionEpoch) view.returnTracking[id]=data.tracking;
+ } catch(error) { if(epoch===sessionEpoch) view.returnTrackingErrors[id]=error.message; }
+ finally { if(epoch===sessionEpoch) { delete view.returnTrackingBusy[id]; render(); } }
+}
 async function refreshCurrent() { if (view.selected) return fetchDetail(view.selected); if (view.tab === 'senders') return fetchSenders(); if (view.tab === 'returns') return fetchReturns(); const tasks = [fetchOrders()]; if (view.tab === 'home') tasks.push(fetchAnalytics()); await Promise.allSettled(tasks); }
 async function logout() {
  try { await jsonRequest('/api/safar/logout',{method:'POST',body:'{}'}); sessionChannel?.postMessage('logout'); clearSession(); toast(t('loggedOut')); }
@@ -456,6 +471,7 @@ document.addEventListener('click',async event => {
  if (action === 'refresh-analytics') return fetchAnalytics();
  if (action === 'refresh-senders') return fetchSenders();
  if (action === 'refresh-returns') return fetchReturns();
+ if (action === 'track-return') return fetchReturnTracking(control.dataset.caseId);
  if (action === 'open-return') return openReturnDialog();
  if (action === 'load-more') return fetchOrders(true);
  if (action === 'clear-filters') { view.search = ''; view.filter = 'all'; view.sender = ''; view.period = 'all'; return fetchOrders(); }
@@ -492,7 +508,7 @@ document.addEventListener('change',async event => {
  if (event.target.id === 'senderFilter') view.sender = event.target.value;
  else if (event.target.id === 'dateFilter') view.period = event.target.value;
  else if (event.target.id === 'sortFilter') view.sort = event.target.value;
- else if (event.target.id === 'scopeFilter') { sessionEpoch++; view.chatId = Number(event.target.value); view.orders = []; view.detailCache = {}; view.tracking = {}; view.senders = null; view.analytics = null; view.selected = null; view.lastSync = null; await Promise.allSettled([fetchOrders(),fetchSenders(),fetchAnalytics()]); return; }
+ else if (event.target.id === 'scopeFilter') { sessionEpoch++; view.chatId = Number(event.target.value); view.orders = []; view.detailCache = {}; view.tracking = {}; view.senders = null; view.analytics = null; view.returnCases = []; view.returnTracking = {}; view.returnTrackingErrors = {}; view.selected = null; view.lastSync = null; await Promise.allSettled([fetchOrders(),fetchSenders(),fetchAnalytics()]); return; }
  else return;
  view.orders = []; await fetchOrders();
 });
