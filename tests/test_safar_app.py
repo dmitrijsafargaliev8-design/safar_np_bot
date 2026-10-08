@@ -396,6 +396,42 @@ class SafarAppTests(unittest.TestCase):
         self.assertEqual(len(result["photos"]), 1)
         self.assertNotIn("secret-photo-id", json.dumps(result))
 
+    def test_return_cases_are_distinct_from_deleted_receipts_and_scoped(self):
+        self.login()
+        self.assertEqual(self.get("/api/safar/returns").json["cases"], [])
+        payload = {"order_id": "job-alpha", "reason": "refused_by_recipient", "chat_id": USER}
+        opened = self.post("/api/safar/returns", payload)
+        self.assertEqual(opened.status_code, 201)
+        case = opened.json["case"]
+        self.assertEqual(case["outbound_ttn"], SAMPLE["result"]["ttn"])
+        self.assertEqual(case["sender_profile"], "default")
+        self.assertEqual(case["carrier_state"], "unverified")
+        self.assertEqual(case["warehouse_state"], "not_received")
+        self.assertEqual(case["finance_state"], "unreviewed")
+        self.assertEqual(self.post("/api/safar/returns", payload).status_code, 200)
+        self.assertEqual(len(self.get("/api/safar/returns").json["cases"]), 1)
+        details = self.get("/api/safar/returns/" + case["id"])
+        self.assertEqual(details.status_code, 200)
+        self.assertEqual(details.json["case"]["events"][0]["event_type"], "case_opened")
+        self.assertEqual(self.get("/api/safar/returns/" + case["id"] + "?chat_id=" + str(GROUP)).status_code, 404)
+        self.assertEqual(self.post("/api/safar/returns", {**payload, "chat_id": 43201}).status_code, 403)
+        self.assertEqual(self.post("/api/safar/returns", {**payload, "reason": "deleted"}).status_code, 422)
+        self.assertEqual(self.post("/api/safar/returns", {**payload, "order_id": "nonexistent"}).status_code, 422)
+        self.assertEqual(self.post("/api/safar/returns", {**payload, "order_id": "job-alpha"}, csrf=False).status_code, 403)
+        self.carrier.create_ttn.assert_not_called()
+        self.carrier.get_ttn_status.assert_not_called()
+
+    def test_cancelled_ttn_does_not_automatically_create_return(self):
+        cancelled = copy.deepcopy(SAMPLE)
+        cancelled["key"] = "job-cancelled"
+        cancelled["state"] = "deleted"
+        self.seed(cancelled)
+        self.login()
+        result = self.post("/api/safar/returns",
+                           {"order_id": "job-cancelled", "reason": "unclaimed", "chat_id": USER})
+        self.assertEqual(result.status_code, 422)
+        self.assertEqual(self.get("/api/safar/returns").json["cases"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
