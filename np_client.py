@@ -44,7 +44,35 @@ def _norm_text(value: str) -> str:
     return value
 
 
-def _normalize_city_input(value: str):
+def _warehouse_city_queries(value: str):
+    """Possible exact city prefixes of a location ending in a street and house.
+
+    These are directory queries, never a guessed city. This interpretation is
+    used only when an explicit warehouse number determines the delivery route.
+    """
+    location = re.sub(r"\s+", " ", re.sub(r"[,;]", " ", value or "")).strip(" .,-")
+    address = re.fullmatch(
+        r"(.+?)\s+\d{1,5}(?:[A-Za-zА-Яа-яІіЇїЄєҐґ]|[/-][0-9A-Za-zА-Яа-яІіЇїЄєҐґ]+)?",
+        location,
+    )
+    if not address:
+        return []
+    body = address.group(1).strip()
+    street = re.search(
+        r"(?i)\s+(?:вул(?:иця)?|улица|ул|просп(?:ект)?|пров(?:улок)?|переулок|шосе)\.?\s+",
+        body,
+    )
+    if street:
+        return [body[:street.start()].strip(" .,-")]
+    words = body.split()
+    # A house alone is not enough to shorten a city. At least one word must
+    # remain as the street, and long unclear text requires a correction.
+    if not 2 <= len(words) <= 7:
+        return []
+    return [" ".join(words[:end]) for end in range(len(words) - 1, 0, -1)]
+
+
+def _normalize_city_input(value: str, *, warehouse_address: bool = False):
     raw = re.sub(r"\s+", " ", (value or "").strip())
     if not raw:
         return "", ""
@@ -58,9 +86,13 @@ def _normalize_city_input(value: str):
             parts = [leading_area.group(1), leading_area.group(2)]
     areas = [part for part in parts if re.search(r"(?i)\s+(?:область|обл)$", part.rstrip(" ."))]
     cities = [part for part in parts if part not in areas and not re.search(r"(?i)\s+(?:район|р-н)$", part.rstrip(" ."))]
-    if len(areas) > 1 or (areas and len(cities) != 1):
+    combined_address = " ".join(cities)
+    has_branch_address = warehouse_address and len(cities) > 1 and bool(_warehouse_city_queries(combined_address))
+    if len(areas) > 1 or (areas and len(cities) != 1 and not has_branch_address):
         raise NovaPoshtaError("Уточни один город и одну область для этого заказа.")
-    if areas:
+    if has_branch_address:
+        city, region_hint = combined_address, areas[0] if areas else ""
+    elif areas:
         city, region_hint = cities[0], areas[0]
     else:
         city = parts[0] if parts else ""
@@ -176,29 +208,33 @@ class NovaPoshtaClient:
             raise NovaPoshtaError(f"Область не найдена однозначно: {name}")
         return matches[0]
 
-    def get_city_ref(self, city_name: str, *, area: str = "") -> str:
+    def get_city_ref(self, city_name: str, *, area: str = "", warehouse: str = "") -> str:
         raw_query = (city_name or "").strip()
         if not raw_query:
             raise NovaPoshtaError("Не указан город.")
 
-        query, region_hint = _normalize_city_input(raw_query)
-        rows = self._call(
-            "Address", "getCities",
-            {"FindByString": query, "Limit": "100", "Page": "1"},
-        )
+        query, region_hint = _normalize_city_input(raw_query, warehouse_address=bool(warehouse))
+        search_queries = [query] + (_warehouse_city_queries(query) if warehouse else [])
+        exact = []
+        for search_query in dict.fromkeys(search_queries):
+            rows = self._call(
+                "Address", "getCities",
+                {"FindByString": search_query, "Limit": "100", "Page": "1"},
+            )
+            wanted = _norm_text(search_query)
+            for row in rows:
+                candidates = {
+                    _norm_text(re.sub(r"\s*\([^)]*\)\s*$", "", row.get("Description") or "")),
+                    _norm_text(re.sub(r"\s*\([^)]*\)\s*$", "", row.get("DescriptionRu") or "")),
+                }
+                if wanted in candidates:
+                    exact.append(row)
+            if exact:
+                query = search_query
+                break
 
         if not rows:
             raise NovaPoshtaError(f"Город не найден: {raw_query}")
-
-        wanted = _norm_text(query)
-        exact = []
-        for row in rows:
-            candidates = {
-                _norm_text(re.sub(r"\s*\([^)]*\)\s*$", "", row.get("Description") or "")),
-                _norm_text(re.sub(r"\s*\([^)]*\)\s*$", "", row.get("DescriptionRu") or "")),
-            }
-            if wanted in candidates:
-                exact.append(row)
 
         if not exact:
             raise NovaPoshtaError(f"Город не найден точно: {raw_query}. Уточни название.")
@@ -692,7 +728,7 @@ class NovaPoshtaClient:
             if not (warehouse or "").strip():
                 raise NovaPoshtaError("Не указано отделение НП или адрес доставки.")
 
-            city_ref = self.get_city_ref(city, area=area)
+            city_ref = self.get_city_ref(city, area=area, warehouse=warehouse)
             warehouse_ref = self.get_warehouse_ref(city_ref, warehouse)
             recipient_ref, contact_ref, recipient_phone = self.get_or_create_recipient(
                 full_name, phone, city_ref, email=email

@@ -58,7 +58,7 @@ if not NOVA_POSHTA_API_KEY:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
-RELEASE_VERSION = "2026.10.08-geography-v4"
+RELEASE_VERSION = "2026.10.08-inline-orders-v5"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) if TELEGRAM_BOT_TOKEN else None
 np_client = NovaPoshtaClient(NOVA_POSHTA_API_KEY) if NOVA_POSHTA_API_KEY else None
 
@@ -350,7 +350,7 @@ def parse_order(text: str):
         phone_match = PHONE_RE.search(phone_line)
 
         def _name_candidate(value: str) -> str:
-            candidate = (value or "").strip(" ,;-:")
+            candidate = (value or "").strip(" .,;-:")
             if not candidate:
                 return ""
 
@@ -362,7 +362,7 @@ def parse_order(text: str):
                 if marker:
                     cut_positions.append(marker.start())
             if cut_positions:
-                candidate = candidate[:min(cut_positions)].strip(" ,;-:")
+                candidate = candidate[:min(cut_positions)].strip(" .,;-:")
 
             if (
                 not candidate
@@ -408,7 +408,6 @@ def parse_order(text: str):
         if not data.get("full_name"):
             skip_indices = {
                 x for x in (
-                    warehouse_line_index,
                     area_line_index,
                     region_line_index,
                     settlement_line_index,
@@ -428,6 +427,13 @@ def parse_order(text: str):
                 candidate = lines[j].strip()
                 if not candidate:
                     continue
+
+                # Подпись может содержать адрес, отделение и ФИО в одной
+                # строке, а телефон — на следующей. Проверяем только хвост
+                # после номера отделения, не весь адрес как имя.
+                if j == warehouse_line_index:
+                    branch = WAREHOUSE_RE.search(candidate)
+                    candidate = candidate[branch.end():]
 
                 if ":" in candidate:
                     candidate_key = _canonical_key(candidate.split(":", 1)[0])

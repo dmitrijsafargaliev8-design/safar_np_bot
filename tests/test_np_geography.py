@@ -25,6 +25,46 @@ class GeographyTests(unittest.TestCase):
         client._call = Mock(side_effect=directory)
         return client
 
+    def test_street_and_house_before_branch_number_use_exact_city_prefix(self):
+        city = {"Ref": "velykodolynske-city", "Description": "Великодолинське", "DescriptionRu": "Великодолинское"}
+        for location in ("Великодолинське Маріїнський 5.", "Великодолинське, Маріїнська, 5",
+                         "Великодолинське вул. Маріїнська 5"):
+            with self.subTest(location=location):
+                client = self.client([city])
+                self.assertEqual(client.get_city_ref(location, warehouse="2"), "velykodolynske-city")
+                self.assertEqual(client._call.call_args.args[2]["FindByString"], "Великодолинське")
+
+    def test_multiword_city_with_multiword_street_keeps_whole_city(self):
+        city = {"Ref": "bila-tserkva", "Description": "Біла Церква", "DescriptionRu": "Белая Церковь"}
+        client = self.client([city])
+        self.assertEqual(client.get_city_ref("Біла Церква Героїв Небесної Сотні 12", warehouse="2"), "bila-tserkva")
+        self.assertEqual(client._call.call_args.args[2]["FindByString"], "Біла Церква")
+
+    def test_branch_address_does_not_remove_or_override_oblast(self):
+        location = "Киевская обл, Васильков, Центральная, 5"
+        self.assertEqual(self.client().get_city_ref(location, warehouse="2"), "vasylkiv-city")
+        with self.assertRaisesRegex(NovaPoshtaError, "разные области"):
+            self.client().get_city_ref(location, area="Днепропетровская", warehouse="2")
+        with self.assertRaisesRegex(NovaPoshtaError, "не найден в области"):
+            self.client().get_city_ref("Днепропетровская обл, Васильков Центральная 5", warehouse="2")
+
+    def test_city_prefix_requires_a_street_house_and_explicit_branch(self):
+        for location, warehouse in (("Васильков Центральная 5", ""), ("Васильков Центральная", "2"),
+                                    ("Васильковка Центральная 5", "2")):
+            with self.subTest(location=location, warehouse=warehouse):
+                with self.assertRaises(NovaPoshtaError):
+                    self.client().get_city_ref(location, warehouse=warehouse)
+
+    def test_longest_exact_city_name_wins_over_shorter_name(self):
+        cities = [{"Ref": "nova-kakhovka", "Description": "Нова Каховка"},
+                  {"Ref": "nova-village", "Description": "Нова"}]
+        self.assertEqual(self.client(cities).get_city_ref("Нова Каховка Шевченка 5", warehouse="2"), "nova-kakhovka")
+
+    def test_ambiguous_city_with_branch_address_still_requires_oblast(self):
+        other = dict(CITY, Ref="other-city", Area="dnipro-area")
+        with self.assertRaisesRegex(NovaPoshtaError, "неоднозначно"):
+            self.client([CITY, other]).get_city_ref("Васильков Центральная 5", warehouse="2")
+
     def test_oblast_before_or_after_city_in_russian_and_ukrainian(self):
         for location in ("Киевская обл, Васильков", "Васильков, Киевская обл.",
                          "Київська область; м. Васильків", "м.Васильків, Київська обл",
