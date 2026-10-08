@@ -117,7 +117,7 @@ class OrderPipeline:
                 (chat_id, owner_id, profile_id, self.clock()),
             )
 
-    def ingest_app_text(self, chat_id, owner_id, text, request_id):
+    def ingest_app_text(self, chat_id, owner_id, text, request_id, *, photo=None):
         """Durably intake one app-supplied source, without forged Telegram updates.
 
         The client-generated request ID is stable across network retries. A
@@ -132,15 +132,24 @@ class OrderPipeline:
             raise ValueError("Order source text must be 1-8000 characters")
         if "\x00" in text or any(ord(char) < 32 and char not in "\n\r\t" for char in text):
             raise ValueError("Invalid control character in source")
+        if photo is not None:
+            if not isinstance(photo, dict) or any(not isinstance(photo.get(k), str) or not photo[k]
+                                                  for k in ("file_id", "file_unique_id")):
+                raise ValueError("Invalid trusted media reference")
+            if len(photo["file_id"]) > 512 or len(photo["file_unique_id"]) > 512:
+                raise ValueError("Invalid media reference length")
+        media_identity = photo["file_unique_id"] if photo else ""
+
         key = f"{chat_id}:0:{owner_id}:app:{request_id}"
         # Short-lived replay guard protects against accidental double-submits
         # with a *new* browser request ID. Phone/name are NOT identity: a
         # customer may legitimately place many separate orders.
-        source_fingerprint = hashlib.sha256(" ".join(text.split()).casefold().encode()).hexdigest()
+        source_fingerprint = hashlib.sha256(_json([" ".join(text.split()).casefold(),media_identity]).encode()).hexdigest()
         with self.lock, self.db:
             job = self._job(key)
             if job is not None:
-                if job.get("source") != "app" or job.get("source_text") != text:
+                if (job.get("source") != "app" or job.get("source_text") != text
+                        or (job.get("app_media_unique_id") or "") != media_identity):
                     raise OrderCorrectionConflict("Request ID was already used for different content")
                 return job, False
             now = self.clock()
@@ -157,6 +166,7 @@ class OrderPipeline:
                 # mistakenly claim the old deleted receipt as a new order.
                 if (earlier.get("source") == "app"
                         and earlier.get("sender_profile") == sender_profile
+                        and (earlier.get("app_media_unique_id") or "") == media_identity
                         and earlier.get("state") not in {"deleted"}
                         and 0 <= now - float(earlier.get("created_at") or 0) <= 120
                         and " ".join((earlier.get("source_text") or "").split()).casefold()
@@ -165,9 +175,10 @@ class OrderPipeline:
             job = {
                 "key": key, "chat_id": chat_id, "owner_id": owner_id,
                 "source": "app", "source_text": text,
+                "app_media_unique_id": media_identity,
                 "source_fingerprint": source_fingerprint,
                 "thread_id": 0, "anchor_id": None,
-                "messages": [{"text": text, "date": now}],
+                "messages": [{"text": text, "date": now, **({"photo": [photo]} if photo else {})}],
                 "state": "collecting", "due": now, "created_at": now,
                 "attempts": 0, "notified": True, "result": None,
                 "order": None, "identity": None,
