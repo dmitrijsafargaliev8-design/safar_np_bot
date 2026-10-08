@@ -7,7 +7,13 @@ Existing Flask / Gunicorn service for forwarded Nova Poshta orders.
 - Its reply includes the photos, shipment number, recipient, destination and amounts.
 - Declared value is required. Cash on delivery is enabled only by an explicit COD field.
 - Reply to an error with a complete corrected order; the original photos stay attached.
-- `/retry` as a reply retries a known failed order. Uncertain shipment saves stay blocked.
+- Forward the same order again after deleting its TTN in Nova Poshta: the bot
+  checks the exact number and creates a replacement only after confirmed deletion.
+  There is no limit on confirmed delete/recreate cycles. Photos and amounts remain attached.
+- `/retry` as a reply retries a known failed order or checks whether a completed
+  TTN has been deleted. Active TTNs are reused; uncertain shipment saves stay blocked.
+  Unknown status or a failed tracking request never unlocks another live shipment.
+  Deleted numbers remain in receipt history, and all album aliases share the replacement.
 - `/orders` lists the last 10 orders for the current chat and sender.
 
 Runtime: `pip install -r requirements.txt` then

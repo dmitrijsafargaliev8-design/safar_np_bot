@@ -186,6 +186,17 @@ class OrderJournal:
         self.execute("SELECT 1").fetchone()
         return True
 
+    def receipts_for_ttn(self, ttn):
+        value = ("COALESCE(result::jsonb->'result'->>'ttn',result::jsonb->>'ttn')"
+                 if self.backend == "postgres" else
+                 "COALESCE(json_extract(result,'$.result.ttn'),json_extract(result,'$.ttn'))")
+        return self.execute(f"SELECT * FROM receipts WHERE {value}=?", (ttn,)).fetchall()
+
+    def jobs_for_ttn(self, ttn):
+        value = ("body::jsonb->'result'->>'ttn'" if self.backend == "postgres"
+                 else "json_extract(body,'$.result.ttn')")
+        return self.execute(f"SELECT body FROM jobs WHERE {value}=?", (ttn,)).fetchall()
+
     def close(self):
         self._closed = True
         if self._worker_connection is not None:
