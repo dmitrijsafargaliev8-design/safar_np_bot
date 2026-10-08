@@ -16,6 +16,14 @@ Existing Flask / Gunicorn service for forwarded Nova Poshta orders.
   Deleted numbers remain in receipt history, and all album aliases share the replacement.
 - `/orders` lists the last 10 orders for the current chat and sender.
 
+Telegram's slash menu is published and verified at startup (default, Russian
+and Ukrainian interface languages). `/start` and `/menu` open the command list;
+`/help` explains forwarding photos, corrections and amounts; `/example` supplies
+an editable order; `/status` checks the services. `/track NUMBER` reads a TTN
+status without creating or editing a shipment. `/track` alone selects the most
+recent completed order, or its referenced card when sent as a reply. Saved
+order lookup is restricted to the current chat and sender.
+
 Runtime: `pip install -r requirements.txt` then
 `gunicorn bot:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120`.
 Webhook accepts signed `message` and `edited_message` updates. Incoming messages

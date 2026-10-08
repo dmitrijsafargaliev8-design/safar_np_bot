@@ -58,7 +58,7 @@ if not NOVA_POSHTA_API_KEY:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
-RELEASE_VERSION = "2026.10.08-routing-guards-v7"
+RELEASE_VERSION = "2026.10.08-command-menu-v8"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) if TELEGRAM_BOT_TOKEN else None
 np_client = NovaPoshtaClient(NOVA_POSHTA_API_KEY) if NOVA_POSHTA_API_KEY else None
 
@@ -527,33 +527,60 @@ def parse_order(text: str):
     return data
 
 
-HELP_TEXT = (
-    "Просто перешли заказ из группы в этот бот — можно вместе с фото.\n\n"
-    "На отделение:\n"
+BOT_COMMANDS = (
+    ("start", "Начать работу с ботом"),
+    ("menu", "Все команды и быстрые подсказки"),
+    ("help", "Как переслать заказ с фото"),
+    ("example", "Образец заполненного заказа"),
+    ("orders", "Мои последние 10 заказов"),
+    ("track", "Проверить статус ТТН"),
+    ("retry", "Повторить заказ или пересоздать удалённую ТТН"),
+    ("status", "Проверить работу бота и Новой почты"),
+)
+MENU_TEXT = (
+    "SAFAR NP BOT\n\n" + "\n".join(f"/{command} — {description}" for command, description in BOT_COMMANDS)
+    + "\n\nЗаказ с фото просто перешли сюда из группы."
+    + "\n/track — последний заказ, ответ на карточку или /track НОМЕР_ТТН."
+    + "\n/retry отправляй ответом на карточку заказа или сообщение с ошибкой."
+)
+ORDER_EXAMPLE = (
     "Одесса\n"
     "НП 142\n"
     "Тестовий Отримувач\n"
     "+380 50 000 00 01\n"
-    "Оценка 1600\n\n"
-    "Или адресная доставка:\n"
-    "Одеська область\n"
-    "Березівський район\n"
-    "Село Петровірівка\n"
-    "Вул. Шклярука 15\n"
-    "Іваненко Марія\n"
-    "0500000002\n"
-    "Оценка 1800"
+    "Оценка 1600"
 )
+HELP_TEXT = (
+    "Перешли заказ из группы вместе с фото или альбомом. Текст заказа может быть в подписи к любому фото.\n\n"
+    "Нужны: ФИО, телефон, город, отделение НП и оценка. Для адресной доставки — город, улица и дом.\n\n"
+    "Оценка — объявленная стоимость. Наложка включается только отдельной строкой «Наложка 1600».\n\n"
+    "Если нужна правка, ответь на сообщение с ошибкой полным исправленным заказом: фото сохранятся.\n"
+    "Для повтора ответь /retry. Если прежняя ТТН удалена в Новой почте, бот создаст новую; действующую повторно не создаёт.\n\n"
+    "/example — образец заказа.\n/menu — все команды."
+)
+_telegram_commands = []
 
 
-if bot:
-    @bot.message_handler(commands=["start", "help"])
+def register_command_handlers(telegram_bot):
+    @telegram_bot.message_handler(commands=["start", "menu"])
     def start_handler(message):
         if not _is_allowed(message):
             return
-        bot.reply_to(message, HELP_TEXT)
+        telegram_bot.reply_to(message, MENU_TEXT)
 
-    @bot.message_handler(commands=["status"])
+    @telegram_bot.message_handler(commands=["help"])
+    def help_handler(message):
+        if _is_allowed(message):
+            telegram_bot.reply_to(message, HELP_TEXT)
+
+    @telegram_bot.message_handler(commands=["example"])
+    def example_handler(message):
+        if _is_allowed(message):
+            telegram_bot.reply_to(message, "Образец — замени данные получателя:\n\n" + ORDER_EXAMPLE
+                                  + "\n\nЕсли нужна наложка, добавь отдельную строку: Наложка 1600."
+                                  + "\nЗатем отправь заказ вместе с фото товара.")
+
+    @telegram_bot.message_handler(commands=["status"])
     def status_handler(message):
         if not _is_allowed(message):
             return
@@ -563,7 +590,7 @@ if bot:
         sender_status = "не проверен"
 
         try:
-            telegram_ok = bool(bot.get_me().id)
+            telegram_ok = bool(telegram_bot.get_me().id)
         except Exception as exc:
             logger.warning("Telegram status failed: %s", exc)
 
@@ -578,7 +605,7 @@ if bot:
             except Exception as exc:
                 logger.warning("Nova Poshta status failed: %s", exc)
 
-        bot.reply_to(
+        telegram_bot.reply_to(
             message,
             "SAFAR NP BOT\n"
             f"Telegram: {'OK' if telegram_ok else 'ERROR'}\n"
@@ -586,13 +613,13 @@ if bot:
             f"Sender: {sender_status}",
         )
 
-    @bot.message_handler(commands=["orders"])
+    @telegram_bot.message_handler(commands=["orders"])
     def orders_handler(message):
         if not _is_allowed(message):
             return
         pipeline = get_pipeline()
         if not pipeline:
-            bot.reply_to(message, "Сервис обработки заказов пока недоступен.")
+            telegram_bot.reply_to(message, "Сервис обработки заказов пока недоступен.")
             return
         jobs = pipeline.list_orders(message.chat.id, message.from_user.id)
         labels = {"collecting": "в очереди", "processing": "обрабатывается", "created": "готово",
@@ -603,12 +630,57 @@ if bot:
             order = job.get("order") or {}
             result = job.get("result") or {}
             lines.append(f"{result.get('ttn') or '—'} · {order.get('full_name') or 'Заказ'} · {labels[job['state']]}")
-        bot.reply_to(message, "Последние заказы:\n" + "\n".join(lines) if lines else "Заказов пока нет.")
+        telegram_bot.reply_to(message, "Последние заказы:\n" + "\n".join(lines) if lines else "Заказов пока нет.")
 
-    @bot.message_handler(func=lambda message: bool((message.text or "").startswith("/")))
+    @telegram_bot.message_handler(commands=["track"])
+    def track_handler(message):
+        if not _is_allowed(message):
+            return
+        parts = (message.text or "").split(None, 1)
+        number = re.sub(r"\s+", "", parts[1]) if len(parts) == 2 else ""
+        order = None
+        if len(parts) == 1:
+            pipeline = get_pipeline()
+            if pipeline:
+                if message.reply_to_message:
+                    order = pipeline.order_for_message(message.chat.id, message.from_user.id,
+                                                       message.reply_to_message.message_id)
+                else:
+                    order = next((job for job in pipeline.list_orders(message.chat.id, message.from_user.id)
+                                  if job["state"] == "created" and (job.get("result") or {}).get("ttn")), None)
+            number = ((order or {}).get("result") or {}).get("ttn", "")
+        if not re.fullmatch(r"\d{14}", number):
+            telegram_bot.reply_to(message, "Отправь /track и номер ТТН из 14 цифр или ответь /track на карточку своего заказа.")
+            return
+        if not np_client:
+            telegram_bot.reply_to(message, "Проверка ТТН пока недоступна.")
+            return
+        try:
+            row = np_client.get_ttn_status(number, phone=((order or {}).get("order") or {}).get("phone", ""))
+        except NovaPoshtaError:
+            telegram_bot.reply_to(message, "Не удалось получить статус из Новой почты. Повтори /track позже.")
+            return
+        text = f"ТТН: {number}\nСтатус: {row.get('Status') or 'Статус пока не указан'}"
+        code = str(row.get("StatusCode"))
+        if code in {"9", "10", "11"} and row.get("DateReceived"):
+            text += f"\nПолучено: {row['DateReceived']}"
+        elif code not in {"2", "3"} and row.get("ScheduledDeliveryDate"):
+            text += f"\nОжидаемая доставка: {row['ScheduledDeliveryDate']}"
+        telegram_bot.reply_to(message, text)
+
+    @telegram_bot.message_handler(commands=["retry"])
+    def retry_hint_handler(message):
+        if _is_allowed(message):
+            telegram_bot.reply_to(message, "Ответь командой /retry на карточку заказа или сообщение с ошибкой. Фото сохранятся.")
+
+    @telegram_bot.message_handler(func=lambda message: bool((message.text or "").startswith("/")))
     def unknown_command_handler(message):
         if _is_allowed(message):
-            bot.reply_to(message, "Команды: /help, /status, /orders. Для повтора ответь на ошибку командой /retry.")
+            telegram_bot.reply_to(message, "Эта команда не найдена.\n\n" + MENU_TEXT)
+
+
+if bot:
+    register_command_handlers(bot)
 
 
 _pipeline = None
@@ -679,6 +751,8 @@ def health():
         telegram_configured=bool(TELEGRAM_BOT_TOKEN),
         nova_poshta_configured=bool(NOVA_POSHTA_API_KEY),
         webhook_secret_configured=bool(WEBHOOK_SECRET),
+        telegram_commands_configured=bool(_telegram_commands),
+        telegram_commands=_telegram_commands,
         order_storage=_pipeline.db.backend if _pipeline else None,
         order_storage_persistent=bool(_pipeline and _pipeline.db.persistent),
     )
@@ -886,7 +960,32 @@ def ensure_webhook():
         logger.exception("Could not configure Telegram webhook automatically")
 
 
+def ensure_command_menu():
+    """Publish the slash menu and verify Telegram's stored default commands."""
+    global _telegram_commands
+    _telegram_commands = []
+    if not bot:
+        return False
+    try:
+        commands = [telebot.types.BotCommand(command, description) for command, description in BOT_COMMANDS]
+        for language in ("", "ru", "uk"):
+            if not bot.set_my_commands(commands, language_code=language):
+                raise RuntimeError("Telegram did not accept the command menu")
+        if not bot.set_chat_menu_button(menu_button=telebot.types.MenuButtonCommands(type="commands")):
+            raise RuntimeError("Telegram did not accept the menu button")
+        actual = bot.get_my_commands()
+        if [(command.command, command.description) for command in actual] != list(BOT_COMMANDS):
+            raise RuntimeError("Telegram command verification did not match")
+        _telegram_commands = [command.command for command in actual]
+        logger.info("Telegram command menu verified: %s", ", ".join(_telegram_commands))
+        return True
+    except Exception as exc:
+        logger.warning("Could not configure Telegram command menu: %s", type(exc).__name__)
+        return False
+
+
 ensure_webhook()
+ensure_command_menu()
 
 # Temporary setup diagnostic for the confirmed sender branch:
 # Nova Poshta mobile branch №778, Odesa, vul. Bazova 20.

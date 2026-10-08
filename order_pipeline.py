@@ -468,6 +468,15 @@ class OrderPipeline:
                                    (chat_id, owner_id, limit)).fetchall()
             return [json.loads(row["body"]) for row in rows]
 
+    def order_for_message(self, chat_id, owner_id, message_id):
+        with self.lock:
+            row = self.db.execute(
+                "SELECT j.body FROM messages m JOIN jobs j ON j.key=m.key "
+                "WHERE m.chat_id=? AND m.message_id=? AND j.owner_id=?",
+                (chat_id, message_id, owner_id),
+            ).fetchone()
+            return json.loads(row["body"]) if row else None
+
     def close(self):
         self.stop.set()
         self.wakeup.set()
