@@ -6,6 +6,7 @@ validated proposals; the app never invokes shipment creation or deletion.
 from __future__ import annotations
 
 import io
+import hashlib
 import hmac
 import math
 import os
@@ -26,6 +27,7 @@ from safar_auth import (
 )
 from safar_operations import sender_summary, select_sender, tracking
 from safar_monitor import monitor_pass, order_timeline, ready as monitor_ready
+from safar_ocr import extract_text, OcrUnavailable
 from safar_returns import create_case, get_case, list_cases, carrier_snapshot, link_verified_easy_return, confirm_warehouse_receipt
 
 
@@ -340,7 +342,9 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
         response = make_response(jsonify(ok=True, user_id=session.user_id,
                                          csrf_token=session.csrf_token, expires_at=session.expires_at,
                                          chat_id=default_scope(session.user_id),
-                                         auto_intake_enabled=os.getenv('SAFAR_APP_AUTO_CREATE') == '1'))
+                                         auto_intake_enabled=os.getenv('SAFAR_APP_AUTO_CREATE') == '1',
+                                         media_intake_enabled=os.getenv('SAFAR_APP_MEDIA_INTAKE') == '1' and os.getenv('SAFAR_APP_AUTO_CREATE') == '1',
+                                         ocr_enabled=os.getenv('SAFAR_OCR_ENABLED') == '1'))
         response.set_cookie(COOKIE_NAME, session.token, max_age=SESSION_AGE, secure=True,
                             httponly=True, samesite="Lax", path="/api/safar")
         return no_store(response)
@@ -378,7 +382,9 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
         session = current_session()
         return jsonify(ok=True, user_id=session.user_id, csrf_token=session.csrf_token,
                        expires_at=session.expires_at, chat_id=default_scope(session.user_id),
-                       auto_intake_enabled=os.getenv("SAFAR_APP_AUTO_CREATE") == "1")
+                       auto_intake_enabled=os.getenv("SAFAR_APP_AUTO_CREATE") == "1",
+                       media_intake_enabled=os.getenv("SAFAR_APP_MEDIA_INTAKE") == "1" and os.getenv("SAFAR_APP_AUTO_CREATE") == "1",
+                       ocr_enabled=os.getenv("SAFAR_OCR_ENABLED") == "1")
 
     @bp.post("/api/safar/logout")
     def logout():
@@ -431,6 +437,99 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
             abort(422)
         return jsonify(order=public_order(job), queued=job["state"] == "collecting",
                        accepted=is_new, source="app"), 202 if is_new else 200
+
+    @bp.post("/api/safar/orders/intake/photo")
+    def intake_with_photo():
+        """Send one image to the operator's PRIVATE bot chat, then journal it.
+
+        Telegram is already the existing media store for SAFAR forwarding. This
+        bridge must not expose the file ID or bot token to the browser.
+        """
+        session = current_session()
+        require_same_origin(request)
+        require_csrf(request, session)
+        if (os.getenv("SAFAR_APP_AUTO_CREATE") != "1"
+                or os.getenv("SAFAR_APP_MEDIA_INTAKE") != "1"):
+            abort(503)
+        if request.content_length is not None and request.content_length > 3 * 1024 * 1024:
+            abort(413)
+        if len(request.files) != 1 or "image" not in request.files:
+            abort(422)
+        upload = request.files["image"]
+        if upload.mimetype not in {"image/jpeg", "image/png"}:
+            abort(415)
+        data = upload.stream.read(2 * 1024 * 1024 + 1)
+        if not 16 <= len(data) <= 2 * 1024 * 1024:
+            abort(413)
+        kind = ("image/jpeg" if data.startswith(b"\\xff\\xd8\\xff") else
+                "image/png" if data.startswith(b"\\x89PNG\\r\\n\\x1a\\n") else "")
+        if kind != upload.mimetype:
+            abort(415)
+        text = request.form.get("text", "")
+        if not isinstance(text, str) or len(text) > 8000:
+            abort(422)
+        if not text.strip():
+            try:
+                text = extract_text(data, enabled=os.getenv("SAFAR_OCR_ENABLED") == "1")
+            except OcrUnavailable:
+                abort(422)
+        request_id = request.form.get("request_id", "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", request_id):
+            abort(422)
+        raw_scope = request.form.get("chat_id")
+        try:
+            body = {"chat_id": int(raw_scope)} if raw_scope is not None else {}
+        except (TypeError, ValueError):
+            abort(422)
+        chat = current_scope(session, body)
+        digest = hashlib.sha256(data).hexdigest()
+        pipe = pipeline()
+        key = f"{chat}:0:{session.user_id}:app:{request_id}"
+        with pipe.lock:
+            existing = pipe._job(key)
+            if existing is not None:
+                if (existing.get("source") != "app"
+                        or existing.get("source_text") != text
+                        or existing.get("app_image_sha256") != digest):
+                    abort(409)
+                return jsonify(order=public_order(existing), accepted=False), 200
+            file = io.BytesIO(data)
+            file.name = "safar-order.jpg" if kind == "image/jpeg" else "safar-order.png"
+            try:
+                # Explicitly PRIVATE chat with the owner; never send customer
+                # images to the source group or selected customer.
+                message = telegram_bot.send_photo(
+                    session.user_id, file, caption="SAFAR / PRIVATE ORDER IMAGE")
+                sizes = getattr(message, "photo", None) or []
+                photos = []
+                for item in sizes:
+                    file_id = getattr(item, "file_id", None)
+                    unique_id = getattr(item, "file_unique_id", None)
+                    if isinstance(file_id, str) and isinstance(unique_id, str):
+                        photos.append({"file_id": file_id, "file_unique_id": unique_id,
+                                       "width": getattr(item, "width", 0),
+                                       "height": getattr(item, "height", 0)})
+                if not photos:
+                    abort(502)
+                photo = max(photos, key=lambda p: p["width"] * p["height"])
+                with pipe.db:
+                    job, created = pipe.ingest_app_text(
+                        chat, session.user_id, text, request_id, photo=photo)
+                    if created:
+                        job["app_image_sha256"] = digest
+                        pipe._write(job)
+                return jsonify(order=public_order(job), accepted=created,
+                               queued=job["state"] == "collecting"), 202 if created else 200
+            except OrderCorrectionConflict:
+                abort(409)
+            except (ValueError, TypeError):
+                abort(422)
+            except HTTPException:
+                raise
+            except Exception:
+                # Most often the operator has not started the private bot chat.
+                # No order or TTN is created if the photo bridge fails.
+                abort(502)
 
     @bp.get("/api/safar/returns")
     def return_cases():
