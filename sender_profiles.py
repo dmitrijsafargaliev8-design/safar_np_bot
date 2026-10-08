@@ -63,6 +63,12 @@ class SenderProfiles:
                 or not re.fullmatch(r"[A-Z][A-Z0-9_]{1,80}", api_var)
             ):
                 raise NovaPoshtaError(f"Профиль {profile_id}: некорректное имя переменной API.")
+            # Key-only discovery is safe solely for an explicitly designated
+            # account. A bare alias must not silently inherit the legacy key.
+            if not any(provided) and not api_var:
+                raise NovaPoshtaError(
+                    f"Профиль {profile_id}: без явных Ref нужен собственный api_key_env."
+                )
             api_key = env.get(api_var, "").strip() if api_var else default_client.api_key
             if not api_key:
                 raise NovaPoshtaError(f"Профиль {profile_id}: указанный API-ключ не настроен.")
