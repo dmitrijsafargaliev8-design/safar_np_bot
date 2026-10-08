@@ -6,7 +6,7 @@ const demo = new URLSearchParams(location.search).get('demo') === '1';
 let language = 'uk';
 try { language = localStorage.getItem('safar.locale') === 'ru' ? 'ru' : 'uk'; } catch (_) {}
 const words = {
- returns:['Повернення','Возвраты'], returnNew:['Зафіксувати повернення','Зафиксировать возврат'], returnReason:['Причина повернення','Причина возврата'], returnHelp:['Заявка створюється вручну. Це не скасування ТТН і не доказ доставки товару назад.','Запись создаётся оператором. Это не удаление ТТН и не доказательство фактического возврата.'], returnSaved:['Повернення додано до окремого журналу.','Возврат добавлен в отдельный журнал.'], returnEmpty:['Повернень у цьому чаті не зареєстровано.','В этом чате возвраты пока не зарегистрированы.'], returnWarehouse:['Склад: очікуємо підтвердження','Склад: ожидает подтверждения'], returnUnknown:['Стан перевізника не перевірений','Статус перевозчика не проверен'], home:['Головна','Главная'], orders:['Замовлення','Заказы'], shipments:['ТТН','ТТН'], senders:['Відправники','Отправители'], settings:['Налаштування','Настройки'],
+ returns:['Повернення','Возвраты'], returnNew:['Зафіксувати повернення','Зафиксировать возврат'], returnReason:['Причина повернення','Причина возврата'], returnHelp:['Заявка створюється вручну. Це не скасування ТТН і не доказ доставки товару назад.','Запись создаётся оператором. Это не удаление ТТН и не доказательство фактического возврата.'], returnSaved:['Повернення додано до окремого журналу.','Возврат добавлен в отдельный журнал.'], returnEmpty:['Повернень у цьому чаті не зареєстровано.','В этом чате возвраты пока не зарегистрированы.'], returnWarehouse:['Склад: очікуємо підтвердження','Склад: ожидает подтверждения'], returnUnknown:['Стан перевізника не перевірений','Статус перевозчика не проверен'], intake:['Додати замовлення','Добавить заказ'], intakeTitle:['Розумний прийом замовлення','Умный приём заказа'], intakeHelp:['Встав текст замовлення. SAFAR сам розпізнає поля та перевірить їх перед створенням ТТН.','Вставьте текст заказа. SAFAR сам извлечёт поля и проверит их перед созданием ТТН.'], intakeSource:['Текст замовлення','Текст заказа'], intakeSubmit:['Передати в автоматичну обробку','Передать на автоматическую обработку'], intakeDisabled:['Автоматичний прийом замовлень ще не дозволено адміністратором.','Автоматический приём заказов ещё не разрешён администратором.'], intakeImagesLater:['Фото та скриншоти: підключення захищеного сховища ще не завершене.','Фото и скриншоты: защищённое хранилище ещё не подключено.'], intakeQueued:['Замовлення збережено й передано в чергу.','Заказ сохранён и передан в очередь.'], intakeExisting:['Замовлення вже отримане; повтор не створений.','Заказ уже получен; повтор не создан.'], intakeEmpty:['Встав текст одного замовлення.','Вставьте текст одного заказа.'], home:['Головна','Главная'], orders:['Замовлення','Заказы'], shipments:['ТТН','ТТН'], senders:['Відправники','Отправители'], settings:['Налаштування','Настройки'],
  control:['Контроль відправок','Контроль отправок'], overviewDesc:['Замовлення, фото й накладні — з вашого Telegram-журналу.','Заказы, фото и накладные — из вашего Telegram-журнала.'],
  all:['Усі','Все'], fresh:['Нові','Новые'], processing:['В обробці','В обработке'], created:['ТТН створено','ТТН создана'], invalid:['Потрібна перевірка','Нужна проверка'], failed:['Помилка','Ошибка'], uncertain:['Перевірити у НП','Проверить в НП'], deleted:['Видалено','Удалено'],
  attention:['Потребують уваги','Требуют внимания'], total:['Всього замовлень','Всего заказов'], journal:['У вашому журналі','В вашем журнале'], issued:['Оформлені документи','Оформленные документы'], unresolved:['Помилки та перевірки','Ошибки и проверки'], queued:['Очікують завершення','Ожидают завершения'],
@@ -64,6 +64,7 @@ const badge = status => `<span class="state state-${['collecting','processing','
 const tabs = [['home','home','home'],['orders','orders','orders'],['shipments','shipments','truck'],['returns','returns','refresh'],['senders','senders','users'],['settings','settings','settings']];
 const view = {tab:'home',returnTab:'orders',filter:'all',search:'',sender:'',period:'all',sort:'updated_desc',chatId:null,scopes:[],selected:null,orders:[],counts:{},pagination:{},authed:false,loading:true,listLoading:false,moreLoading:false,error:'',detailLoading:false,detailError:'',detailCache:{},tracking:{},trackingLoading:false,trackingError:'',senders:null,sendersLoading:false,sendersError:'',analytics:null,analyticsLoading:false,analyticsError:'',csrf:'',expiresAt:null,lastSync:null,offline:!navigator.onLine || document.body.dataset.offlineShell === 'true',editing:false,editDraft:null,editError:'',saving:false,pair:null,pairBusy:false,pairError:'',photoErrors:new Set(),photoAttempts:{},photo:null,installPrompt:null,scopeLoading:false};
 view.returnCases = []; view.returnsLoading = false; view.returnsError = '';
+view.autoIntakeEnabled = false;
 let requestSequence = 0, sessionEpoch = 0, expiryTimer = null, listController = null, searchTimer = null, pairingTimer = null, pairSequence = 0;
 let sessionChannel;
 try { sessionChannel = new BroadcastChannel('safar-session'); sessionChannel.onmessage = e => { if (e.data === 'logout') clearSession(); }; } catch (_) {}
@@ -117,7 +118,7 @@ function imagePreview(order,index=0,cls='order-img') {
  return `<div class="${cls} has-photo">${photoContent(order,index)}${cls === 'order-img' && photos.length > 1 ? `<span class="photo-count">${icon('photo')}${photos.length}</span>` : ''}</div>`;
 }
 function oneOrder(order) {
- return `<button type="button" class="order-row ${['invalid','failed','uncertain'].includes(order.state) ? 'order-attention' : ''}" data-order="${esc(order.id)}">${imagePreview(order)}<div class="order-main"><div class="order-name">${esc(order.recipient || t('unnamed'))}</div><div class="order-place">${esc([order.city,order.warehouse ? `${t('branch')} №${order.warehouse}` : ''].filter(Boolean).join(' · ') || t('unknownCity'))}</div><div class="order-extra"><span>${esc(dateStr(order.updated_at || order.created_at))}</span>${order.has_pending_edits || order.pending_order ? `<span class="draft-dot" title="${esc(t('staged'))}">${icon('edit')}</span>` : ''}</div></div><div class="order-meta"><div class="order-money">${money(order.declared)}</div><div class="order-cod">${esc(t('cod'))}: ${money(order.cod)}</div>${badge(order.state)}</div><span class="order-arrow" aria-hidden="true">›</span></button>`;
+ return `<button type="button" class="order-row ${['invalid','failed','uncertain'].includes(order.state) ? 'order-attention' : ''}" data-order="${esc(order.id)}">${imagePreview(order)}<div class="order-main"><div class="order-name">${esc(order.recipient || t('unnamed'))}${order.source === 'app' ? '<span class="source-chip">APP</span>' : ''}</div><div class="order-place">${esc([order.city,order.warehouse ? `${t('branch')} №${order.warehouse}` : ''].filter(Boolean).join(' · ') || t('unknownCity'))}</div><div class="order-extra"><span>${esc(dateStr(order.updated_at || order.created_at))}</span>${order.has_pending_edits || order.pending_order ? `<span class="draft-dot" title="${esc(t('staged'))}">${icon('edit')}</span>` : ''}</div></div><div class="order-meta"><div class="order-money">${money(order.declared)}</div><div class="order-cod">${esc(t('cod'))}: ${money(order.cod)}</div>${badge(order.state)}</div><span class="order-arrow" aria-hidden="true">›</span></button>`;
 }
 function panelOrders(data,limit=Infinity,shipment=false) {
  if (view.listLoading && !data.length) return skeleton();
@@ -135,7 +136,7 @@ function analyticsPanel() {
 }
 function home() {
  const c = totalCounts();
- return `<div class="screen">${title('SAFAR / COMMAND CENTER',t('control'),t('overviewDesc'))}<div class="hero"><div class="hero-copy"><div class="eyebrow">SHIPPING. REFINED.</div><h2>${esc(t('heroTitle'))}<br><span>${esc(t('heroSecond'))}</span></h2><p>${esc(t('heroDesc'))}</p><button type="button" class="button-primary" data-tab="orders">${icon('orders')}${esc(t('openOrders'))}${icon('arrow')}</button></div><div class="hero-art" aria-hidden="true">${icon('box')}<span>SAFAR / 02</span></div></div><div class="metrics">${stat(t('total'),view.lastSync ? c.all : '—',t('journal'),'orders',true)}${stat(t('attention'),view.lastSync ? c.attention : '—',t('unresolved'),'bell')}${stat(t('created'),view.lastSync ? c.created : '—',t('issued'),'truck')}${stat(t('processing'),view.lastSync ? c.processing : '—',t('queued'),'clock')}</div>${view.error ? errorPanel(view.error) : ''}<div class="grid-panels"><div class="panel"><div class="panel-header"><h3>${esc(t('recent'))}</h3><button type="button" class="section-more" data-tab="orders">${esc(t('seeAll'))}</button></div>${panelOrders(view.orders,5)}</div>${analyticsPanel()}</div></div>`;
+ return `<div class="screen">${title('SAFAR / COMMAND CENTER',t('control'),t('overviewDesc'))}<div class="hero"><div class="hero-copy"><div class="eyebrow">SHIPPING. REFINED.</div><h2>${esc(t('heroTitle'))}<br><span>${esc(t('heroSecond'))}</span></h2><p>${esc(t('heroDesc'))}</p><button type="button" class="button-primary" data-tab="orders">${icon('orders')}${esc(t('openOrders'))}${icon('arrow')}</button>${button('open-intake',t('intake'),'orders',view.offline,'button-primary')}</div><div class="hero-art" aria-hidden="true">${icon('box')}<span>SAFAR / 02</span></div></div><div class="metrics">${stat(t('total'),view.lastSync ? c.all : '—',t('journal'),'orders',true)}${stat(t('attention'),view.lastSync ? c.attention : '—',t('unresolved'),'bell')}${stat(t('created'),view.lastSync ? c.created : '—',t('issued'),'truck')}${stat(t('processing'),view.lastSync ? c.processing : '—',t('queued'),'clock')}</div>${view.error ? errorPanel(view.error) : ''}<div class="grid-panels"><div class="panel"><div class="panel-header"><h3>${esc(t('recent'))}</h3><button type="button" class="section-more" data-tab="orders">${esc(t('seeAll'))}</button></div>${panelOrders(view.orders,5)}</div>${analyticsPanel()}</div></div>`;
 }
 function filters() {
  const c = totalCounts();
@@ -145,7 +146,7 @@ function filters() {
 function orderList(shipment=false) {
  const page = view.pagination, total = Number(page.total);
  const count = Number.isFinite(total) ? total : view.orders.length;
- return `<div class="screen">${title(shipment ? 'LOGISTICS / SHIPMENTS' : 'WORKSPACE / ORDER MANAGEMENT',t(shipment ? 'shipments' : 'orders'),t(shipment ? 'shipmentDesc' : 'inboxDesc'))}${filters()}${view.error ? errorPanel(view.error) : ''}<div class="panel"><div class="panel-header"><h3>${esc(t(shipment ? 'documents' : 'registry'))}</h3><span class="panel-small">${count} ${esc(t('records'))}</span></div>${panelOrders(view.orders,Infinity,shipment)}${view.orders.length ? `<div class="pagination"><span>${esc(t('shown'))} ${view.orders.length} ${esc(t('of'))} ${count}</span>${page.has_more ? button('load-more',t(view.moreLoading ? 'loading' : 'loadMore'),'arrow',view.moreLoading || view.offline) : ''}</div>` : ''}</div></div>`;
+ return `<div class="screen">${title(shipment ? 'LOGISTICS / SHIPMENTS' : 'WORKSPACE / ORDER MANAGEMENT',t(shipment ? 'shipments' : 'orders'),t(shipment ? 'shipmentDesc' : 'inboxDesc'))}${filters()}${view.error ? errorPanel(view.error) : ''}<div class="panel"><div class="panel-header"><h3>${esc(t(shipment ? 'documents' : 'registry'))}</h3><span class="panel-small">${count} ${esc(t('records'))}</span>${button('open-intake',t('intake'),'orders',view.offline,'button-primary')}</div>${panelOrders(view.orders,Infinity,shipment)}${view.orders.length ? `<div class="pagination"><span>${esc(t('shown'))} ${view.orders.length} ${esc(t('of'))} ${count}</span>${page.has_more ? button('load-more',t(view.moreLoading ? 'loading' : 'loadMore'),'arrow',view.moreLoading || view.offline) : ''}</div>` : ''}</div></div>`;
 }
 const fieldDefs = [['full_name','recipient','text','recipient'],['phone','phone','tel','phone'],['city','city','text','city'],['warehouse','warehouse','text','warehouse'],['cost','declared','text','declared'],['cod_amount','cod','text','cod'],['weight','weight','text','weight'],['description','description','text','description']];
 function editPanel(order) {
@@ -214,7 +215,7 @@ function messageFor(status) { return t(status === 401 ? 'expired' : status === 4
 function clearSession(message='') {
  sessionEpoch++; pairSequence++; clearTimeout(pairingTimer); clearTimeout(searchTimer); clearTimeout(expiryTimer); view.saving = false;
  view.listLoading = false; view.moreLoading = false; view.detailLoading = false; view.trackingLoading = false; view.sendersLoading = false; view.analyticsLoading = false; view.error = ''; view.detailError = ''; view.trackingError = ''; view.sendersError = ''; view.analyticsError = '';
- view.authed = false; view.returnCases = []; view.returnsError = ''; view.csrf = ''; view.expiresAt = null; view.orders = []; view.counts = {}; view.detailCache = {}; view.tracking = {}; view.selected = null; view.editDraft = null; view.editing = false; view.senders = null; view.analytics = null; view.lastSync = null; view.scopes = []; view.chatId = null; view.loading = false; view.pair = null; view.pairBusy = false; view.pairError = message; closeDialog(); for (const dialog of document.querySelectorAll('dialog')) { dialog.replaceChildren(); dialog.correction = null; } view.photoErrors.clear(); view.photoAttempts = {}; listController?.abort(); requestSequence++; render();
+ view.authed = false; view.autoIntakeEnabled = false; view.returnCases = []; view.returnsError = ''; view.csrf = ''; view.expiresAt = null; view.orders = []; view.counts = {}; view.detailCache = {}; view.tracking = {}; view.selected = null; view.editDraft = null; view.editing = false; view.senders = null; view.analytics = null; view.lastSync = null; view.scopes = []; view.chatId = null; view.loading = false; view.pair = null; view.pairBusy = false; view.pairError = message; closeDialog(); for (const dialog of document.querySelectorAll('dialog')) { dialog.replaceChildren(); dialog.correction = null; } view.photoErrors.clear(); view.photoAttempts = {}; listController?.abort(); requestSequence++; render();
 }
 async function jsonRequest(url,options={}) {
  if (!navigator.onLine || view.offline) { const error = new Error(t('networkError')); error.status = 0; throw error; }
@@ -285,7 +286,7 @@ async function fetchAnalytics() {
  } catch (error) { if (epoch === sessionEpoch) view.analyticsError = error.message; }
  finally { if (epoch === sessionEpoch) { view.analyticsLoading = false; if ((view.authed || demo) && view.tab === 'home' && !view.selected) render(); } }
 }
-function applySession(data) { view.authed = true; view.csrf = data.csrf_token || ''; view.expiresAt = data.expires_at; view.chatId = data.chat_id ?? null; view.loading = false; view.pair = null; view.pairError = ''; clearTimeout(pairingTimer); clearTimeout(expiryTimer); const remaining = Number(data.expires_at) * 1000 - Date.now(); if (Number.isFinite(remaining)) expiryTimer = setTimeout(() => clearSession(t('expired')),Math.max(0,remaining)); }
+function applySession(data) { view.autoIntakeEnabled = data.auto_intake_enabled === true; view.authed = true; view.csrf = data.csrf_token || ''; view.expiresAt = data.expires_at; view.chatId = data.chat_id ?? null; view.loading = false; view.pair = null; view.pairError = ''; clearTimeout(pairingTimer); clearTimeout(expiryTimer); const remaining = Number(data.expires_at) * 1000 - Date.now(); if (Number.isFinite(remaining)) expiryTimer = setTimeout(() => clearSession(t('expired')),Math.max(0,remaining)); }
 async function loadWorkspace() {
  const epoch = sessionEpoch;
  if (!demo) { try { const data = await jsonRequest('/api/safar/scopes'); if (epoch !== sessionEpoch) return; view.scopes = data.scopes || []; view.chatId = data.selected_chat_id ?? view.chatId; } catch (error) { if (epoch !== sessionEpoch || !view.authed) return; } }
@@ -367,6 +368,30 @@ async function createReturnCase() {
  } catch(error){if(epoch===sessionEpoch && errorBox) errorBox.textContent=error.message;}
  finally {view.saving=false; for(const button of dialog.querySelectorAll("button")) button.disabled=false;}
 }
+function openIntake() {
+ const dialog = document.getElementById("actionDialog");
+ if (!window.crypto?.randomUUID) { toast(t("networkError")); return; }
+ dialog.intakeRequestId = window.crypto.randomUUID().replace(/-/g,"");
+ const available = !demo && view.authed && view.autoIntakeEnabled && !view.offline;
+ dialog.innerHTML = `<div class="dialog-top"><div><div class="eyebrow">SAFAR / SMART INTAKE</div><h2 id="actionTitle">${esc(t("intakeTitle"))}</h2></div>${button("close-dialog",t("close"),"close",false,"icon-button")}</div><p class="muted-text">${esc(t("intakeHelp"))}</p><form id="intakeForm" autocomplete="off"><label for="intakeText">${esc(t("intakeSource"))}</label><textarea id="intakeText" name="source" rows="9" maxlength="8000" placeholder="${esc(t("intakeSource"))}" ${available ? "" : "disabled"}></textarea><p class="muted-text intake-hint">${esc(t("intakeImagesLater"))}</p>${available ? "" : `<div class="notice">${icon("shield")}${esc(demo ? t("demoNotice") : t("intakeDisabled"))}</div>`}<div id="intakeError" class="form-error" role="alert"></div><div class="form-actions"><button type="submit" class="button-primary" ${available ? "" : "disabled"}>${icon("orders")}${esc(t("intakeSubmit"))}</button>${button("close-dialog",t("cancel"),"close")}</div></form>`;
+ openDialog(dialog); document.getElementById("intakeText")?.focus({preventScroll:true});
+}
+async function submitIntake() {
+ const dialog=document.getElementById("actionDialog"), input=document.getElementById("intakeText");
+ const errorBox=document.getElementById("intakeError"), rawText=input?.value || "";
+ if (!rawText.trim()) { if(errorBox) errorBox.textContent=t("intakeEmpty"); return; }
+ if (view.saving || !view.autoIntakeEnabled || demo || view.offline) return;
+ const epoch=sessionEpoch;
+ view.saving=true; for(const el of dialog.querySelectorAll("button")) el.disabled=true;
+ try {
+  const data=await jsonRequest("/api/safar/orders/intake",{method:"POST",body:JSON.stringify({text:rawText,request_id:dialog.intakeRequestId,chat_id:view.chatId})});
+  if(epoch!==sessionEpoch) return;
+  view.saving=false; closeDialog(); toast(t(data.accepted ? "intakeQueued" : "intakeExisting"));
+  view.selected=null; view.tab="orders"; view.search=""; view.filter="all"; view.orders=[];
+  await fetchOrders();
+ } catch(error) { if(epoch===sessionEpoch && errorBox) errorBox.textContent=error.message; }
+ finally { view.saving=false; for(const el of dialog.querySelectorAll("button")) el.disabled=false; }
+}
 let dialogReturnFocus = null;
 function openDialog(dialog) { dialogReturnFocus = document.activeElement; if (!dialog.open) dialog.showModal(); document.body.classList.add('dialog-open'); }
 function closeDialog() { if (view.saving) return; for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close(); view.photo = null; document.body.classList.remove('dialog-open'); if (dialogReturnFocus?.isConnected) dialogReturnFocus.focus({preventScroll:true}); dialogReturnFocus = null; }
@@ -425,6 +450,7 @@ document.addEventListener('click',async event => {
  if (control.dataset.order) { view.returnTab = view.tab === 'shipments' ? 'shipments' : 'orders'; view.selected = control.dataset.order; view.editing = false; view.editDraft = null; view.trackingError = ''; window.scrollTo({top:0,behavior:'instant'}); await fetchDetail(view.selected); document.querySelector('h1')?.focus({preventScroll:true}); return; }
  if (control.dataset.photo !== undefined) { showPhoto(Number(control.dataset.photo)); return; }
  const action = control.dataset.action;
+ if (action === 'open-intake') return openIntake();
  if (action === 'reconnect') return reconnect();
  if (action === 'refresh') return refreshCurrent();
  if (action === 'refresh-analytics') return fetchAnalytics();
@@ -457,7 +483,7 @@ document.addEventListener('click',async event => {
  if (action === 'pair-cancel') { pairSequence++; clearTimeout(pairingTimer); view.pair = null; view.pairBusy = false; view.pairError = ''; render(); return; }
  if (action === 'install' && view.installPrompt) { const prompt = view.installPrompt; view.installPrompt = null; await prompt.prompt(); render(); }
 });
-document.addEventListener('submit',event => { if (event.target.id === 'correctionForm') { event.preventDefault(); reviewCorrection(); } else if (event.target.id === 'returnForm') { event.preventDefault(); createReturnCase(); } });
+document.addEventListener('submit',event => { if (event.target.id === 'correctionForm') { event.preventDefault(); reviewCorrection(); } else if (event.target.id === 'returnForm') { event.preventDefault(); createReturnCase(); } else if (event.target.id === 'intakeForm') { event.preventDefault(); submitIntake(); } });
 document.addEventListener('input',event => {
  if (event.target.id === 'orderSearch') { view.search = event.target.value; clearTimeout(searchTimer); searchTimer = setTimeout(() => { view.orders = []; fetchOrders(); },300); }
  if (event.target.closest('#correctionForm')) { if (view.editDraft) view.editDraft[event.target.name] = event.target.value; }
