@@ -3,6 +3,7 @@
 Return cases record an explicit operator observation. No carrier write or
 financial/warehouse transition can be inferred from an issued waybill.
 """
+import hashlib
 import json
 import re
 import time
@@ -45,7 +46,38 @@ def list_cases(pipe, chat_id, owner_id, *, limit=100):
             "ORDER BY updated DESC,id DESC LIMIT ?",
             (chat_id, owner_id, min(200, max(1, limit))),
         ).fetchall()
-    return [_public(row) for row in rows]
+        totals = _expense_totals(pipe, [row["id"] for row in rows])
+    return [_public_with_total(row, totals.get(row["id"], 0)) for row in rows]
+
+
+
+class ReturnExpenseConflict(ValueError):
+    """Same finance action key cannot be reused for a different cost."""
+
+
+def _expense_totals(pipe, case_ids):
+    if not case_ids:
+        return {}
+    placeholders = ",".join("?" for _ in case_ids)
+    records = pipe.db.execute(
+        "SELECT case_id, details FROM return_events "
+        "WHERE event_type='return_expense' AND case_id IN (" + placeholders + ")",
+        tuple(case_ids),
+    ).fetchall()
+    totals = {case_id: 0 for case_id in case_ids}
+    for row in records:
+        evidence = json.loads(row["details"])
+        cents = evidence.get("amount_kopeks")
+        if type(cents) is int and cents > 0:
+            totals[row["case_id"]] += cents
+    return totals
+
+
+def _public_with_total(row, cost_kopeks=0):
+    result = _public(row)
+    result["expense_total_kopeks"] = cost_kopeks
+    result["finance_state"] = row["finance_state"]  # Never infer payout.
+    return result
 
 
 def create_case(pipe, chat_id, owner_id, order_key, reason):
@@ -108,7 +140,8 @@ def get_case(pipe, chat_id, owner_id, case_id):
             "WHERE case_id=? ORDER BY at,id",
             (case_id,),
         ).fetchall()
-    result = _public(row)
+    totals = _expense_totals(pipe, [case_id])
+    result = _public_with_total(row, totals.get(case_id, 0))
     result["events"] = [{"at": e["at"], "event_type": e["event_type"]}
                         for e in events]
     return result
@@ -181,7 +214,7 @@ def link_verified_easy_return(pipe, chat_id, owner_id, case_id, reverse_ttn):
             (case_id, chat_id, owner_id),
         ).fetchone()
         if row is None:
-            return None
+            return None, False
         if row["outbound_ttn"] != case["outbound_ttn"] or row["sender_profile"] != case["sender_profile"]:
             raise ValueError("Return case changed during carrier verification")
         if row["reverse_ttn"]:
@@ -250,3 +283,75 @@ def confirm_warehouse_receipt(pipe, chat_id, owner_id, case_id, number, acknowle
             "SELECT * FROM return_cases WHERE id=?", (case_id,)
         ).fetchone()
         return _public(updated), True
+
+
+def record_return_expense(pipe, chat_id, owner_id, case_id, amount, category,
+                          evidence_ref, request_id, acknowledged):
+    """Append-only operator-observed UAH expense with immutable idempotency.
+
+    This does NOT verify bank statements, authorize payments, mutate NP or
+    change the financial settlement state of the return.
+    """
+    if acknowledged is not True:
+        raise ValueError("Explicit operator confirmation required")
+    if not isinstance(case_id, str) or not re.fullmatch(r"[0-9a-f]{32}", case_id):
+        return None, False
+    if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", request_id):
+        raise ValueError("Invalid expense idempotency key")
+    if category not in {"return_delivery", "storage", "other"}:
+        raise ValueError("Invalid expense category")
+    if not isinstance(amount, str) or not re.fullmatch(r"(?:0|[1-9]\d{0,5})(?:\.\d{1,2})?", amount):
+        raise ValueError("Invalid UAH expense amount")
+    whole, dot, fractional = amount.partition(".")
+    cents = int(whole) * 100 + int(fractional.ljust(2, "0")) if dot else int(whole) * 100
+    if not 1 <= cents <= 10_000_000:
+        raise ValueError("Expense amount is out of range")
+    if (not isinstance(evidence_ref, str) or not 3 <= len(evidence_ref.strip()) <= 120
+            or any(ord(char) < 32 or ord(char) == 127 for char in evidence_ref)):
+        raise ValueError("Expense receipt reference is required")
+    if not available(pipe):
+        raise RuntimeError("Returns migration not installed")
+    ref = evidence_ref.strip()
+    record = {
+        "amount_kopeks": cents,
+        "category": category,
+        "reference": ref,
+        "source": "operator",
+        "verified_by_bank": False,
+        "acknowledged": True,
+    }
+    body = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    event_id = hashlib.sha256(
+        f"safar:return-expense:{owner_id}:{case_id}:{request_id}".encode()
+    ).hexdigest()[:32]
+    with pipe.lock, pipe.db:
+        row = pipe.db.execute(
+            "SELECT * FROM return_cases WHERE id=? AND chat_id=? AND owner_id=?",
+            (case_id, chat_id, owner_id),
+        ).fetchone()
+        if row is None:
+            return None, False
+        prior = pipe.db.execute(
+            "SELECT details FROM return_events WHERE id=? AND case_id=?",
+            (event_id, case_id),
+        ).fetchone()
+        if prior is not None:
+            if prior["details"] != body:
+                raise ReturnExpenseConflict("Expense request key already used for different details")
+            totals = _expense_totals(pipe, [case_id])
+            return _public_with_total(row, totals.get(case_id, 0)), False
+        now = time.time()
+        pipe.db.execute(
+            "INSERT INTO return_events (id,case_id,actor_id,at,event_type,details) "
+            "VALUES (?,?,?,?,?,?)",
+            (event_id, case_id, owner_id, now, "return_expense", body),
+        )
+        pipe.db.execute(
+            "UPDATE return_cases SET updated=? WHERE id=?",
+            (now, case_id),
+        )
+        updated = pipe.db.execute(
+            "SELECT * FROM return_cases WHERE id=?", (case_id,)
+        ).fetchone()
+        totals = _expense_totals(pipe, [case_id])
+        return _public_with_total(updated, totals.get(case_id, 0)), True
