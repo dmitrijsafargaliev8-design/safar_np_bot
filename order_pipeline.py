@@ -240,7 +240,11 @@ class OrderPipeline:
         job.pop("duplicate", None)
         job.pop("replaced_ttn", None)
         job.pop("notice", None)
-        identity = job["identity"] = self._identity(job, order)
+        # A correction to an already-issued card must stay bound to its
+        # original receipt. Otherwise changed fields would form a new hash and
+        # bypass the existing-TTN deletion check.
+        previous_identity = job.get("identity") if job.get("result") else None
+        identity = job["identity"] = previous_identity or self._identity(job, order)
         with self.lock:
             row = self.db.execute("SELECT * FROM receipts WHERE identity=?", (identity,)).fetchone()
         receipt = {"order": order}
