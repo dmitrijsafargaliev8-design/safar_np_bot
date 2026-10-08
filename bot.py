@@ -58,7 +58,7 @@ if not NOVA_POSHTA_API_KEY:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
-RELEASE_VERSION = "2026.10.08-deleted-ttn-v6"
+RELEASE_VERSION = "2026.10.08-routing-guards-v7"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) if TELEGRAM_BOT_TOKEN else None
 np_client = NovaPoshtaClient(NOVA_POSHTA_API_KEY) if NOVA_POSHTA_API_KEY else None
 
@@ -253,6 +253,8 @@ def parse_order(text: str):
             continue
         warehouse_line_index = i
         data.setdefault("warehouse", match.group(1))
+        if re.search(r"(?i)почтомат|поштомат", line):
+            data["delivery_point_type"] = "postomat"
 
         # Также понимает "Одесса НП 142" в одной строке.
         city_prefix = line[:match.start()].strip(" ,;-")
@@ -511,6 +513,7 @@ def parse_order(text: str):
             raise ValueError("Указана наложка без суммы. Напиши сумму или «Без наложки».")
 
     data.setdefault("warehouse", "")
+    data.setdefault("delivery_point_type", "")
     data.setdefault("street", "")
     data.setdefault("house", "")
     data.setdefault("flat", "")

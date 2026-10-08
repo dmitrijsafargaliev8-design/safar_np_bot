@@ -358,7 +358,11 @@ class NovaPoshtaClient:
             for row in addresses
             if _norm_text(row.get("MainDescription")) == wanted_city
         ]
-        matches = exact_city or addresses
+        if not exact_city:
+            raise NovaPoshtaError(
+                f"Населённый пункт не найден точно: {raw_city}. Уточни название, чтобы не отправить посылку в другой город."
+            )
+        matches = exact_city
 
         if wanted_area:
             selected_area = self._area_info(area)
@@ -381,8 +385,11 @@ class NovaPoshtaClient:
                 for row in matches
                 if _clean_geo(row.get("Region")) == wanted_region
             ]
-            if district:
-                matches = district
+            if not district:
+                raise NovaPoshtaError(
+                    f"Район {region} не совпадает со справочником для населённого пункта {query}. Уточни адрес."
+                )
+            matches = district
 
         if wanted_type:
             type_aliases = {
@@ -397,8 +404,11 @@ class NovaPoshtaClient:
                     for row in matches
                     if _norm_text(row.get("SettlementTypeCode")) in allowed_codes
                 ]
-                if typed:
-                    matches = typed
+                if not typed:
+                    raise NovaPoshtaError(
+                        f"Тип населённого пункта {settlement_type} не подтверждён для {query}. Уточни адрес."
+                    )
+                matches = typed
 
         # Для доставки до двери предпочитаем населённые пункты,
         # где справочник прямо разрешает AddressDelivery.
@@ -440,7 +450,7 @@ class NovaPoshtaClient:
         return selected_ref
 
 
-    def get_warehouse_ref(self, city_ref: str, warehouse_value: str) -> str:
+    def get_warehouse_ref(self, city_ref: str, warehouse_value: str, *, delivery_point_type: str = "") -> str:
         raw = (warehouse_value or "").strip()
         if not raw:
             raise NovaPoshtaError("Не указано отделение/почтомат.")
@@ -464,6 +474,12 @@ class NovaPoshtaClient:
         if not rows:
             raise NovaPoshtaError(f"Отделение не найдено: {raw}")
 
+        requested_postomat = delivery_point_type == "postomat" or bool(re.search(r"(?i)почтомат|поштомат", raw))
+
+        def is_postomat(row):
+            descriptions = " ".join(str(row.get(k) or "") for k in ("Description", "DescriptionRu", "ShortAddress", "ShortAddressRu"))
+            return bool(re.search(r"(?i)почтомат|поштомат", descriptions))
+
         number_match = re.search(r"\d+", raw)
         if number_match:
             wanted_number = number_match.group(0).lstrip("0") or "0"
@@ -472,9 +488,11 @@ class NovaPoshtaClient:
                 row_number = str(row.get("Number") or "").lstrip("0") or "0"
                 if row_number == wanted_number:
                     exact.append(row)
+            if requested_postomat:
+                exact = [r for r in exact if is_postomat(r)]
             if len(exact) == 1 and exact[0].get("Ref"):
                 return exact[0]["Ref"]
-            if len(exact) > 1:
+            if len(exact) > 1 and not requested_postomat:
                 non_postomat = [
                     r for r in exact
                     if "поштомат" not in _norm_text(r.get("Description"))
@@ -495,6 +513,8 @@ class NovaPoshtaClient:
             if any(wanted == c or wanted in c for c in candidates if c):
                 exact_text.append(row)
 
+        if requested_postomat:
+            exact_text = [r for r in exact_text if is_postomat(r)]
         refs = {r.get("Ref") for r in exact_text if r.get("Ref")}
         if len(refs) == 1:
             return next(iter(refs))
@@ -661,6 +681,7 @@ class NovaPoshtaClient:
         phone: str,
         city: str,
         warehouse: str = "",
+        delivery_point_type: str = "",
         street: str = "",
         house: str = "",
         flat: str = "",
@@ -749,7 +770,9 @@ class NovaPoshtaClient:
                 raise NovaPoshtaError("Не указано отделение НП или адрес доставки.")
 
             city_ref = self.get_city_ref(city, area=area, warehouse=warehouse)
-            warehouse_ref = self.get_warehouse_ref(city_ref, warehouse)
+            warehouse_ref = self.get_warehouse_ref(
+                city_ref, warehouse, delivery_point_type=delivery_point_type
+            )
             recipient_ref, contact_ref, recipient_phone = self.get_or_create_recipient(
                 full_name, phone, city_ref, email=email
             )

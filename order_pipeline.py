@@ -328,7 +328,8 @@ class OrderPipeline:
         media = self.attachments(job)
         if job["state"] == "created":
             order, result = job["order"], job["result"]
-            destination = (f"{order['city']} · НП {order['warehouse']}" if order["warehouse"]
+            point_label = ("Поштомат" if order.get("delivery_point_type") == "postomat" else "НП")
+            destination = (f"{order['city']} · {point_label} {order['warehouse']}" if order["warehouse"]
                            else f"{order['city']} · {order['street']} {order['house']}" + (f", кв. {order['flat']}" if order["flat"] else ""))
             text = (f"✅ ТТН: {result['ttn']}\n{destination}\n{order['full_name']}\n{order['phone']}\n"
                     f"Оценка: {order['cost']:g} грн\n"
