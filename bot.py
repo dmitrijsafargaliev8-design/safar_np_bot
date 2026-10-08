@@ -62,7 +62,7 @@ if not NOVA_POSHTA_API_KEY:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
-RELEASE_VERSION = "2026.10.08-fop-primary-rc3"
+RELEASE_VERSION = "2026.10.08-smila-geo-rc4"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) if TELEGRAM_BOT_TOKEN else None
 np_client = NovaPoshtaClient(NOVA_POSHTA_API_KEY) if NOVA_POSHTA_API_KEY else None
 sender_profiles = SenderProfiles(np_client) if np_client else None
@@ -156,7 +156,22 @@ COD_RE = re.compile(
     r"(?i)\b(?:наложка|наложенный\s+плат[её]ж|накладений\s+платіж|післяплата|cod)"
     r"\b[ \t]*:?[ \t]*(-?[\d \t.,]+)"
 )
-AREA_RE = re.compile(r"(?i)^(.+?)\s+(?:область|обл\.?)$")
+AREA_RE = re.compile(r"(?i)^(.+?)\s+(?:область|області|обл\.?)$")
+# Composite city+region lines are common in forwarded Ukrainian orders:
+# "м. Сміла, Черкаська обл" / "Черкаська обл, м. Сміла".
+# They MUST be separated before applying AREA_RE; otherwise the entire
+# "м. Сміла, Черкаська" is accidentally interpreted as an oblast.
+CITY_AREA_RE = re.compile(
+    r"(?i)^(?P<city>.+?)\s*[,;]\s*(?P<area>[^,;]+?)\s+(?:область|області|обл\.?)$"
+)
+AREA_CITY_RE = re.compile(
+    r"(?i)^(?P<area>[^,;]+?)\s+(?:область|області|обл\.?)\s*[,;]\s*(?P<city>.+)$"
+)
+PREFIXED_CITY_AREA_RE = re.compile(
+    r"(?i)^(?P<city>(?:м(?:істо)?|г(?:ород)?|с(?:ело)?|смт|пгт)\.?\s*"
+    r"[A-Za-zА-Яа-яІіЇїЄєҐґ'’\-]+(?:\s+[A-Za-zА-Яа-яІіЇїЄєҐґ'’\-]+)?)"
+    r"\s+(?P<area>[A-Za-zА-Яа-яІіЇїЄєҐґ'’\-]+)\s+(?:область|області|обл\.?)$"
+)
 REGION_RE = re.compile(r"(?i)^(.+?)\s+(?:район|р-н\.?)$")
 SETTLEMENT_RE = re.compile(
     r"(?i)^(м(?:істо)?|г(?:ород)?|с(?:ело)?|смт|пгт|селище|пос(?:елок)?)"
@@ -191,6 +206,37 @@ def _settlement_type(prefix: str) -> str:
     if p in {"смт", "пгт"} or p.startswith("селище") or p.startswith("пос"):
         return "селище міського типу"
     return "місто"
+
+
+def _split_city_area_line(line: str):
+    """Split explicitly qualified city/oblast pairs without guessing geography.
+
+    Do not invent a location or change spelling. Nova Poshta still checks the
+    exact city+area via its address directory before a TTN can be created.
+    """
+    # A line containing a branch, a phone or a price is a FULL order segment,
+    # not just a location. Leave its parsing to the existing full-order path.
+    # For example: "Киевская обл, Васильков, нп 4, ...".
+    if any(pattern.search(line or "") for pattern in (
+        WAREHOUSE_RE, PHONE_RE, COST_RE, COD_RE,
+    )):
+        return None
+    match = (CITY_AREA_RE.fullmatch(line or "")
+             or AREA_CITY_RE.fullmatch(line or "")
+             or PREFIXED_CITY_AREA_RE.fullmatch(line or ""))
+    if not match:
+        return None
+    raw_city = match.group("city").strip(" ,.")
+    raw_area = match.group("area").strip(" ,.")
+    city_match = SETTLEMENT_RE.fullmatch(raw_city)
+    city = city_match.group(2).strip(" ,.") if city_match else raw_city
+    if not city or not raw_area:
+        return None
+    return {
+        "city": city,
+        "area": raw_area,
+        "settlement_type": (_settlement_type(city_match.group(1)) if city_match else ""),
+    }
 
 
 def _parse_street_line(line: str):
@@ -282,7 +328,23 @@ def parse_order(text: str):
         break
 
     # Адресная доставка: область / район / населённый пункт / улица+дом.
+    # A combined location line must be checked FIRST, even for warehouse
+    # deliveries: "м. Сміла, Черкаська обл" is city+oblast, not an oblast name.
     for i, line in enumerate(lines):
+        inline_location = _split_city_area_line(line)
+        if inline_location:
+            if data.get("area") and data["area"] != inline_location["area"]:
+                raise ValueError("В заказе указаны разные области. Уточни область получателя.")
+            if data.get("city") and data["city"] != inline_location["city"]:
+                raise ValueError("В заказе указаны разные города. Уточни город получателя.")
+            data["city"] = inline_location["city"]
+            data["area"] = inline_location["area"]
+            if inline_location["settlement_type"]:
+                data["settlement_type"] = inline_location["settlement_type"]
+            area_line_index = i
+            settlement_line_index = i
+            continue
+
         area_match = AREA_RE.match(line)
         if area_match and not data.get("area"):
             data["area"] = area_match.group(1).strip(" ,.")
