@@ -1,0 +1,34 @@
+name: SAFAR APP UI checks
+on:
+  pull_request:
+    paths:
+      - "safar_web/**"
+      - "safar_app.py"
+      - "tests/test_safar_app.py"
+      - "bot.py"
+      - ".github/workflows/safar-app-ui.yml"
+  push:
+    branches: [main]
+    paths:
+      - "safar_web/**"
+      - "safar_app.py"
+      - "tests/test_safar_app.py"
+      - "bot.py"
+jobs:
+  ui-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate pure JavaScript syntax
+        run: node --check safar_web/app.js
+      - name: Validate PWA manifest and assets
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          root=pathlib.Path('safar_web')
+          manifest=json.loads((root/'manifest.webmanifest').read_text(encoding='utf-8'))
+          assert manifest['display']=='standalone'
+          for asset in ['app.js','style.css','index.html','icon.svg']:
+              assert (root/asset).stat().st_size>100
+          print('PWA files valid')
+          PY
