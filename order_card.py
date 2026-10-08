@@ -44,7 +44,7 @@ def format_order_card(order: dict, result: dict, photo_count: int, *,
     if duplicate:
         text += "\n♻️ Заказ уже обработан — новая ТТН не создавалась."
     if replaced_ttn:
-        text += f"\n♻️ ТТН {replaced_ttn} удалена, создана новая."
+        text += f"\n♻️ Предыдущая ТТН {replaced_ttn} удалена в НП. Создана новая."
     if notice:
         text += "\n⚠️ " + str(notice)
     return text
