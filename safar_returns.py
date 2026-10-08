@@ -160,7 +160,7 @@ def link_verified_easy_return(pipe, chat_id, owner_id, case_id, reverse_ttn):
         raise ValueError("Invalid incoming return TTN")
     case = get_case(pipe, chat_id, owner_id, case_id)
     if case is None:
-        return None
+        return None, False
     if case["reason"] != "easy_return_after_delivery":
         raise ValueError("Only an Easy Return can use this verified link")
     if reverse_ttn == case["outbound_ttn"]:
@@ -217,7 +217,7 @@ def confirm_warehouse_receipt(pipe, chat_id, owner_id, case_id, number, acknowle
     if acknowledged is not True or not isinstance(number, str) or not re.fullmatch(r"\d{14}", number):
         raise ValueError("An explicit TTN-matched warehouse confirmation is required")
     if not isinstance(case_id, str) or not re.fullmatch(r"[0-9a-f]{32}", case_id):
-        return None
+        return None, False
     if not available(pipe):
         raise RuntimeError("Returns migration not installed")
     with pipe.lock, pipe.db:
@@ -226,7 +226,7 @@ def confirm_warehouse_receipt(pipe, chat_id, owner_id, case_id, number, acknowle
             (case_id, chat_id, owner_id),
         ).fetchone()
         if row is None:
-            return None
+            return None, False
         if number not in {row["outbound_ttn"], row["reverse_ttn"]}:
             raise ValueError("The scanned/entered TTN does not belong to this case")
         if row["warehouse_state"] == "received":
