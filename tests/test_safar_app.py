@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import time
+import threading
 import unittest
 from urllib.parse import urlencode
 from unittest.mock import Mock, patch
@@ -53,6 +54,7 @@ class SafarAppTests(unittest.TestCase):
     def setUp(self):
         self.db = FakeDB()
         self.pipeline = Mock(db=self.db)
+        self.pipeline.lock = threading.RLock()
         self.pipeline.list_orders.return_value = [SAMPLE]
         self.pipeline.order_state_counts.return_value = {"created": 1}
         self.telegram = Mock()
