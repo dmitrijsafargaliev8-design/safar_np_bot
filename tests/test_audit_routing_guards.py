@@ -66,6 +66,22 @@ class RoutingSafetyTests(unittest.TestCase):
         with self.assertRaisesRegex(NovaPoshtaError, "не найден точно"):
             client.get_settlement_ref("Петровірівка")
 
+    def test_explicit_district_must_match(self):
+        client = NovaPoshtaClient("fake-test-api-key")
+        client._call = Mock(return_value=[{"Addresses": [
+            {"Ref": "wrong-district", "MainDescription": "Петровірівка", "Area": "Одеська", "Region": "Подільський"}
+        ]}])
+        with self.assertRaisesRegex(NovaPoshtaError, "Район"):
+            client.get_settlement_ref("Петровірівка", region="Березівський")
+
+    def test_explicit_village_type_must_match(self):
+        client = NovaPoshtaClient("fake-test-api-key")
+        client._call = Mock(return_value=[{"Addresses": [
+            {"Ref": "same-name-city", "MainDescription": "Петровірівка", "SettlementTypeCode": "м."}
+        ]}])
+        with self.assertRaisesRegex(NovaPoshtaError, "Тип населённого пункта"):
+            client.get_settlement_ref("Петровірівка", settlement_type="село")
+
     def test_exact_village_is_accepted(self):
         client = NovaPoshtaClient("fake-test-api-key")
         client._call = Mock(return_value=[{"Addresses": [
