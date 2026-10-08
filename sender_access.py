@@ -13,7 +13,8 @@ def _safe_label(row):
     raw = row.get("Description") or row.get("DescriptionRu") or row.get("FirstName")
     if not isinstance(raw, str):
         return "Название не указано"
-    return re.sub(r"[\\r\n\\t\\u200e\\u200f]", " ", raw).strip()[:72] or "Название не указано"
+    text = re.sub(r"[\x00-\x1f\u200e\u200f]", " ", raw)
+    return text.strip()[:72] or "Название не указано"
 
 
 def read_only_sender_access(client, *, max_pages=3, max_display=12):
