@@ -540,7 +540,8 @@ async function submitArchiveOrder() {
   const data=await jsonRequest(scopedURL('/api/safar/orders/'+encodeURIComponent(target.id)+'/archive'),{method:'POST',body:JSON.stringify({chat_id:view.chatId,archived:target.archived,expected_revision:target.revision,confirm_local_only:true})});
   if(epoch!==sessionEpoch)return;
   view.saving=false;view.detailCache[target.id]=data.order;
-  view.orders=view.orders.map(o=>o.id===target.id?data.order:o);
+  view.orders=view.orders.map(o=>o.id===target.id?data.order:o)
+   .filter(o=>Boolean(o.archived)===(view.archiveView==='archived'));
   view.counts.archived=Math.max(0,Number(view.counts.archived||0)+(data.changed?(target.archived?1:-1):0));
   closeDialog();render();
   toast(target.archived?(language==='ru'?'Заказ перемещён в архив SAFAR':'Замовлення переміщено до архіву SAFAR'):(language==='ru'?'Заказ восстановлен':'Замовлення відновлено'));
