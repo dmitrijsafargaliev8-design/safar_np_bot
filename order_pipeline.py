@@ -743,7 +743,8 @@ class OrderPipeline:
                 + self._order_value("app_archived_at") + " IS NOT NULL",
                 (chat_id, owner_id),
             ).fetchone()
-        counts["archived"] = int(archived["quantity"])
+        if int(archived["quantity"]):
+            counts["archived"] = int(archived["quantity"])
         return counts
 
     def order_queue(self, chat_id, owner_id, limit=10):
