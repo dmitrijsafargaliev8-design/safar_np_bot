@@ -10,7 +10,7 @@ from order_pipeline import OrderCorrectionConflict
 
 class AppBotEntryTests(unittest.TestCase):
     def test_release_accepts_photo_multipart_with_bounded_global_limit(self):
-        self.assertEqual(app_module.RELEASE_VERSION, "2026.10.09-safar-control-v0.3")
+        self.assertEqual(app_module.RELEASE_VERSION, "2026.10.09-safar-control-v0.3.2")
         self.assertGreaterEqual(app_module.app.config["MAX_CONTENT_LENGTH"], 2 * 1024 * 1024 + 65536)
         self.assertLessEqual(app_module.app.config["MAX_CONTENT_LENGTH"], 3 * 1024 * 1024)
 
