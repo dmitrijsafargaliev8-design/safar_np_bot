@@ -56,6 +56,15 @@ ACCESS_POLICY = AccessPolicy(
     strict=os.getenv("STRICT_ACCESS_POLICY", "0").strip() == "1",
 )
 ALLOWED_CHAT_IDS = ACCESS_POLICY.chats
+# Explicit admin list wins; a sole authorized human is the safe default
+# administrator. Multiple authorized humans require SAFAR_ADMIN_USER_IDS.
+_expl_admins = AccessPolicy(users=os.getenv("SAFAR_ADMIN_USER_IDS", "")).users
+SAFAR_ADMIN_USERS = _expl_admins if _expl_admins else (ACCESS_POLICY.users if len(ACCESS_POLICY.users) == 1 else frozenset())
+
+
+def _safar_admin(user_id):
+    return user_id in SAFAR_ADMIN_USERS and user_id in ACCESS_POLICY.users
+
 
 if not TELEGRAM_BOT_TOKEN:
     logger.error("TELEGRAM_BOT_TOKEN/BOT_TOKEN is missing")
@@ -1389,4 +1398,5 @@ app.register_blueprint(create_safar_blueprint(
     get_pipeline=get_pipeline,
     telegram_bot=bot,
     sender_registry=sender_profiles,
+    admin_check=_safar_admin,
 ))
