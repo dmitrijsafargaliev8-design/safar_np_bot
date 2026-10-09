@@ -189,3 +189,23 @@ body{background:radial-gradient(ellipse 65% 36% at 75% -8%,rgba(197,255,92,.065)
 @media(max-width:780px){.hero-v031{min-height:280px;padding:27px 20px}.hero-v031 .hero-art{min-width:70px}.hero-monogram-name{font-size:76px}.hero-monogram>span{font-size:8px}.hero-v031 h2{font-size:clamp(30px,7.8vw,43px)}.hero-actions{flex-direction:column;align-items:stretch}.hero-actions .button-primary,.hero-actions .button-quiet{width:100%;max-width:none}.operations-grid{grid-template-columns:1fr;gap:10px}.operation-card{min-height:105px;padding:16px;gap:9px}.operation-main{margin:0}.operation-value{font-size:29px}.operations-head{align-items:center}.metrics-v031{gap:9px}.metrics-v031 .metric{min-height:118px}.intake-status{align-items:flex-start;flex-wrap:wrap}.intake-status>button{margin-left:19px}.hero-watermark{font-size:210px;right:3%;bottom:-42px}}
 @media(max-width:425px){.hero-v031 .hero-art{display:none}.hero-v031{min-height:300px}.hero-v031 h2{font-size:clamp(30px,9vw,39px)}.release-pill{font-size:8px;padding:8px}.operations-head h2{font-size:21px}.operation-card{min-height:110px}.operation-main{justify-content:space-between}}
 @media(prefers-reduced-motion:reduce){.operation-card{transition:none}.operation-card:hover{transform:none}}
+
+/* SAFAR CONTROL 03.2 — admin review, reversible archive and clear status. */
+.archive-switch{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px}
+.archive-switch button{border:1px solid #3d4b47;border-radius:11px;padding:11px 14px;display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:750;color:#c4cfcc;background:#19231f;min-height:45px}
+.archive-switch button.selected{border-color:#a6cf76;color:var(--volt);background:#293829}
+.archive-switch button svg{width:15px;height:15px}
+.archive-switch button:focus-visible{outline:2px solid var(--volt);outline-offset:2px}
+.archive-disclaimer{padding:13px 16px;border:1px solid #6c5e3d;border-radius:12px;background:#2b271c;color:#eadab3;line-height:1.6;font-size:13px}
+.archive-admin-panel{border-color:#526b56;background:linear-gradient(130deg,#1c2925,#141c20)}
+.archive-admin-panel .eyebrow{color:var(--volt)}
+.archive-admin-panel h3{margin:10px 0 8px;font-size:16px}
+.archive-admin-button{width:100%;justify-content:center;color:#e6f1e7;border-color:#61795d;background:#1c2c23}
+.archive-status{display:inline-flex;align-items:center;gap:8px;border-radius:8px;border:1px solid #777047;background:#3a3421;color:#f5dc9a;padding:8px 11px;font-size:12px;margin:0 0 14px}
+.archive-status svg{width:15px;height:15px}
+.archive-order-summary{display:flex;flex-direction:column;gap:6px;padding:17px 18px;border:1px solid #516d54;background:#1d2a24;border-radius:12px;margin:16px 0 8px}
+.archive-order-summary strong{font-size:16px;overflow-wrap:anywhere}
+.archive-order-summary span{color:#c1d9ba;font-size:13px;letter-spacing:.06em;overflow-wrap:anywhere}
+#archiveOrderForm{display:grid;gap:12px}
+#archiveOrderForm .form-actions{margin-top:9px}
+@media(max-width:540px){.archive-switch button{flex:1;justify-content:center}.archive-order-summary{padding:15px}}

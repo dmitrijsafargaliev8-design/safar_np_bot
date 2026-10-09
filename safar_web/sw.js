@@ -1,6 +1,6 @@
 /* Public shell only. Private APIs, media and mutations bypass CacheStorage. */
 'use strict';
-const CACHE = 'safar-public-shell-v031-20261009';
+const CACHE = 'safar-public-shell-v032-20261009';
 const SHELL = ['/safar/app.js', '/safar/style.css', '/safar/icon.svg',
   '/safar/manifest.webmanifest', '/safar/offline.html', '/safar/icon-192.png',
   '/safar/icon-512.png', '/safar/icon-maskable-512.png'];

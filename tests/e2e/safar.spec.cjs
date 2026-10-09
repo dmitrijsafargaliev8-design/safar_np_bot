@@ -40,29 +40,58 @@ async function screenshot(page, filename) {
   await page.screenshot({ path: path.join(screenshots, filename), fullPage: false });
 }
 
-test('CONTROL 03.1 is unmistakable after login and navigation', async ({ page }) => {
+test('CONTROL 03.2 is unmistakable after login and navigation', async ({ page }) => {
   await signIn(page);
-  await expect(page.locator('.hero-v031')).toContainText('RELEASE 03.1');
+  await expect(page.locator('.hero-v031')).toContainText('RELEASE 03.2');
   await expect(page.locator('.control-operations')).toBeVisible();
   await expect(page.locator('.operation-card')).toHaveCount(3);
   await expect(page.locator('.intake-status')).toContainText('Telegram');
   await page.locator('.operation-card[data-tab="returns"]').click();
   await expect(page.locator('main.workspace h1')).toContainText('Повернення');
   await tab(page, 'settings');
-  await expect(page.locator('main.workspace')).toContainText('v0.3.1');
+  await expect(page.locator('main.workspace')).toContainText('v0.3.2');
 });
 test('HTML references cache-busted assets, SW no longer holds v02 app shell', async ({ page }) => {
   const r=await page.request.get('/safar/');
   expect(r.ok()).toBeTruthy();
   expect(r.headers()['cache-control']).toContain('no-store');
   const html=await r.text();
-  expect(html).toContain('/safar/app.js?v=20261009-031');
-  expect(html).toContain('/safar/style.css?v=20261009-031');
+  expect(html).toContain('/safar/app.js?v=20261009-032');
+  expect(html).toContain('/safar/style.css?v=20261009-032');
   const sw=await (await page.request.get('/safar/sw.js')).text();
-  expect(sw).toContain('safar-public-shell-v031-20261009');
+  expect(sw).toContain('safar-public-shell-v032-20261009');
   expect(sw).toContain("const SHELL = ['/safar/app.js', '/safar/style.css'");
   expect(sw).not.toContain('safar-public-shell-v02-20261008');
 });
+test('admin archives and restores locally without deleting the NP waybill', async ({ page }) => {
+  await signIn(page);
+  await tab(page,'orders');
+  await expect(page.locator('.archive-switch')).toBeVisible();
+  await page.locator('.order-row').first().click();
+  const ttn=await page.locator('.ttn-large').innerText();
+  await expect(page.locator('[data-action="open-archive"]')).toBeVisible();
+  await page.locator('[data-action="open-archive"]').click();
+  const dialog=page.locator('#actionDialog');
+  await expect(dialog).toContainText('у Новій пошті не видаляється');
+  await dialog.locator('#archiveConfirmation').check();
+  await dialog.locator('#archiveOrderForm button[type="submit"]').click();
+  await expect(page.locator('.archive-status')).toContainText('В архіві');
+  await expect(page.locator('.ttn-large')).toHaveText(ttn);
+  await page.locator('[data-action="back"]').click();
+  await page.locator('[data-action="show-archive"]').click();
+  await expect(page.locator('.archive-disclaimer')).toBeVisible();
+  await expect(page.locator('.order-row').first()).toBeVisible();
+  await page.locator('.order-row').first().click();
+  await page.locator('[data-action="open-archive"]').click();
+  await dialog.locator('#archiveConfirmation').check();
+  await dialog.locator('#archiveOrderForm button[type="submit"]').click();
+  await expect(page.locator('.archive-status')).toHaveCount(0);
+  await expect(page.locator('.ttn-large')).toHaveText(ttn);
+  await page.locator('[data-action="back"]').click();
+  await page.locator('[data-action="show-active"]').click();
+  await expect(page.locator('.order-row').first()).toBeVisible();
+});
+
 test('SAFAR CONTROL shows a safe intake gate, returns tab and verified carrier radar', async ({ page }) => {
   await signIn(page);
   await page.locator('[data-action="open-intake"]').first().click();

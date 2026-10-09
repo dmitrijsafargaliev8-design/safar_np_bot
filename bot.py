@@ -56,6 +56,15 @@ ACCESS_POLICY = AccessPolicy(
     strict=os.getenv("STRICT_ACCESS_POLICY", "0").strip() == "1",
 )
 ALLOWED_CHAT_IDS = ACCESS_POLICY.chats
+# Explicit admin list wins; a sole authorized human is the safe default
+# administrator. Multiple authorized humans require SAFAR_ADMIN_USER_IDS.
+_expl_admins = AccessPolicy(users=os.getenv("SAFAR_ADMIN_USER_IDS", "")).users
+SAFAR_ADMIN_USERS = _expl_admins if _expl_admins else (ACCESS_POLICY.users if len(ACCESS_POLICY.users) == 1 else frozenset())
+
+
+def _safar_admin(user_id):
+    return user_id in SAFAR_ADMIN_USERS and user_id in ACCESS_POLICY.users
+
 
 if not TELEGRAM_BOT_TOKEN:
     logger.error("TELEGRAM_BOT_TOKEN/BOT_TOKEN is missing")
@@ -64,7 +73,7 @@ if not NOVA_POSHTA_API_KEY:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 3 * 1024 * 1024  # SAFAR PWA photo: max 2 MiB + multipart; route applies strict 2 MiB per file
-RELEASE_VERSION = "2026.10.09-safar-control-v0.3"
+RELEASE_VERSION = "2026.10.09-safar-control-v0.3.2"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) if TELEGRAM_BOT_TOKEN else None
 np_client = NovaPoshtaClient(NOVA_POSHTA_API_KEY) if NOVA_POSHTA_API_KEY else None
 sender_profiles = SenderProfiles(np_client) if np_client else None
@@ -1389,4 +1398,5 @@ app.register_blueprint(create_safar_blueprint(
     get_pipeline=get_pipeline,
     telegram_bot=bot,
     sender_registry=sender_profiles,
+    admin_check=_safar_admin,
 ))

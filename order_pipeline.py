@@ -693,15 +693,59 @@ class OrderPipeline:
             self.wakeup.wait(0.5)
             self.wakeup.clear()
 
+    def set_order_archived(self, chat_id, owner_id, key, archived, *, expected_revision):
+        """Reversible, owner-scoped UI archive; NEVER cancels NP TTN or drops data.
+
+        Blocking in-flight states prevents hiding a possible unconfirmed carrier
+        creation. App archive history is retained inside the existing journal.
+        """
+        if type(archived) is not bool:
+            raise ValueError("Invalid archive action")
+        if not isinstance(expected_revision, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_revision):
+            raise OrderCorrectionConflict("Refresh order before changing archive state")
+        with self.lock, self.db:
+            row = self.db.execute(
+                "SELECT body,updated FROM jobs WHERE key=? AND chat_id=? AND owner_id=?",
+                (key, chat_id, owner_id),
+            ).fetchone()
+            if row is None:
+                return None
+            job = json.loads(row["body"])
+            if bool(job.get("app_archived_at")) == archived:
+                return {"job": self._order_row(row), "changed": False}
+            if self.order_revision(job) != expected_revision:
+                raise OrderCorrectionConflict("Order changed; refresh before changing archive state")
+            if job["state"] in {"collecting", "processing", "uncertain"}:
+                raise OrderCorrectionConflict("In-flight or uncertain TTN cannot be archived")
+            now = self.clock()
+            job["app_archived_at"] = now if archived else None
+            job["app_archived_by"] = owner_id if archived else None
+            log = list(job.get("app_archive_events") or [])
+            log.append({"action": "archived" if archived else "restored",
+                        "at": now, "actor_id": owner_id})
+            job["app_archive_events"] = log[-50:]
+            self._write(job)
+            updated = self.db.execute("SELECT body,updated FROM jobs WHERE key=?", (key,)).fetchone()
+        return {"job": self._order_row(updated), "changed": True}
+
     def order_state_counts(self, chat_id, owner_id):
         """Owner-scoped totals across the entire journal, not just recent jobs."""
         with self.lock:
             rows = self.db.execute(
                 "SELECT state, COUNT(*) AS quantity FROM jobs "
-                "WHERE chat_id=? AND owner_id=? GROUP BY state",
+                "WHERE chat_id=? AND owner_id=? AND " + self._order_value("app_archived_at") + " IS NULL GROUP BY state",
                 (chat_id, owner_id),
             ).fetchall()
-        return {row["state"]: int(row["quantity"]) for row in rows}
+        counts = {row["state"]: int(row["quantity"]) for row in rows}
+        with self.lock:
+            archived = self.db.execute(
+                "SELECT COUNT(*) AS quantity FROM jobs WHERE chat_id=? AND owner_id=? AND "
+                + self._order_value("app_archived_at") + " IS NOT NULL",
+                (chat_id, owner_id),
+            ).fetchone()
+        if int(archived["quantity"]):
+            counts["archived"] = int(archived["quantity"])
+        return counts
 
     def order_queue(self, chat_id, owner_id, limit=10):
         """Only outstanding/failed jobs for this Telegram sender."""
@@ -724,11 +768,13 @@ class OrderPipeline:
         return ("LOWER(" if self.db.backend == "postgres" else "safar_casefold(") + value + ")"
 
     def _order_filters(self, chat_id, owner_id, *, status="", search="", sender_profile="",
-                       date_from=None, date_to=None, has_ttn=None):
+                       date_from=None, date_to=None, has_ttn=None, archived="active"):
         """Apply every filter in SQL before pagination and scope all queries."""
         if status not in {"", "all", "attention", "collecting", "processing", "invalid",
                           "failed", "uncertain", "created", "deleted"}:
             raise ValueError("Invalid order status")
+        if archived not in {"active", "archived", "all"}:
+            raise ValueError("Invalid archive filter")
         if not isinstance(search, str) or len(search) > 160:
             raise ValueError("Invalid order search")
         if not isinstance(sender_profile, str) or len(sender_profile) > 64:
@@ -741,6 +787,8 @@ class OrderPipeline:
         if date_from is not None and date_to is not None and date_from >= date_to:
             raise ValueError("Invalid activity date range")
         clauses, values = ["chat_id=?", "owner_id=?"], [chat_id, owner_id]
+        if archived != "all":
+            clauses.append(self._order_value("app_archived_at") + (" IS NOT NULL" if archived == "archived" else " IS NULL"))
         if status == "attention":
             clauses.append("state IN ('invalid','failed','uncertain')")
         elif status and status != "all":
