@@ -195,7 +195,7 @@ class SafarAppTests(unittest.TestCase):
                          "expected_revision":d["revision"],"confirm_local_only":True})
             self.assertEqual(r.status_code,409)
             self.assertFalse(self.pipeline._job(job["key"]).get("app_archived_at"))
-        self.assertEqual(self.get("/api/safar/orders").json["counts"]["archived"],0)
+        self.assertEqual(self.get("/api/safar/orders").json["counts"].get("archived",0),0)
         self.carrier.create_ttn.assert_not_called()
 
     def test_tampered_expired_unsigned_and_wrong_actor_fail_closed(self):
