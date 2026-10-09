@@ -57,6 +57,7 @@ class SafarAppTests(unittest.TestCase):
     def setUp(self):
         self.authorized_chats = {USER, GROUP}
         self.authorized = True
+        self.admin_allowed = True
         self.carrier, self.other_carrier, self.telegram = Mock(), Mock(), Mock()
         self.carrier.get_ttn_status.return_value = {
             "Number": SAMPLE["result"]["ttn"], "StatusCode": "1", "Status": "ТТН створено",
@@ -69,6 +70,7 @@ class SafarAppTests(unittest.TestCase):
             telegram_token=TOKEN, webhook_secret=WEBHOOK,
             allowed=lambda chat, user: self.authorized and user == USER and chat in self.authorized_chats,
             get_pipeline=lambda: self.pipeline, telegram_bot=self.telegram,
+            admin_check=lambda uid: self.admin_allowed and uid == USER,
         ))
         self.client = self.web.test_client()
         self.csrf = ""
@@ -133,6 +135,68 @@ class SafarAppTests(unittest.TestCase):
         opaque = cookie.split("=", 1)[1].split(";", 1)[0]
         self.assertEqual(len(opaque), 43)
         self.assertNotEqual(row["token_hash"], opaque)
+
+    def test_admin_archive_is_reversible_and_preserves_carrier_receipts(self):
+        self.login()
+        detail=self.get("/api/safar/orders/job-alpha").json["order"]
+        self.assertTrue(self.get("/api/safar/session").json["is_admin"])
+        route="/api/safar/orders/job-alpha/archive"
+        payload={"chat_id":USER, "archived":True,
+                 "expected_revision":detail["revision"],"confirm_local_only":True}
+        self.assertEqual(self.post(route,payload,csrf=False).status_code,403)
+        self.assertEqual(self.post(route,{**payload,"confirm_local_only":False}).status_code,422)
+        self.assertEqual(self.post(route,{**payload,"chat_id":GROUP}).status_code,404)
+        self.assertEqual(self.post(route,{**payload,"expected_revision":"0"*64}).status_code,409)
+        self.admin_allowed=False
+        self.assertFalse(self.get("/api/safar/session").json["is_admin"])
+        self.assertEqual(self.post(route,payload).status_code,403)
+        self.admin_allowed=True
+        first=self.post(route,payload)
+        self.assertEqual(first.status_code,200)
+        self.assertTrue(first.json["changed"])
+        self.assertTrue(first.json["archived"])
+        self.assertFalse(first.json["ttn_modified"])
+        self.assertEqual(first.json["order"]["ttn"],SAMPLE["result"]["ttn"])
+        self.assertEqual(len(first.json["order"]["archive_events"]),1)
+        repeat=self.post(route,payload)
+        self.assertEqual(repeat.status_code,200)
+        self.assertFalse(repeat.json["changed"])
+        self.assertEqual(len(repeat.json["order"]["archive_events"]),1)
+        self.assertEqual(self.get("/api/safar/orders").json["orders"],[])
+        archived=self.get("/api/safar/orders?archived=archived").json
+        self.assertEqual(len(archived["orders"]),1)
+        self.assertEqual(archived["counts"]["archived"],1)
+        self.assertEqual(archived["counts"].get("created",0),0)
+        self.assertEqual(self.get("/api/safar/orders?archived=all").json["pagination"]["total"],1)
+        self.assertEqual(self.get("/api/safar/orders?archived=invalid").status_code,400)
+        self.assertEqual(self.pipeline._job("job-alpha")["state"],"created")
+        restore={**payload, "archived":False,
+                 "expected_revision":first.json["order"]["revision"]}
+        res=self.post(route,restore)
+        self.assertEqual(res.status_code,200)
+        self.assertFalse(res.json["archived"])
+        self.assertEqual(len(res.json["order"]["archive_events"]),2)
+        self.assertEqual(len(self.get("/api/safar/orders").json["orders"]),1)
+        self.assertEqual(self.get("/api/safar/orders").json["counts"]["archived"],0)
+        self.assertEqual(self.pipeline._job("job-alpha")["result"]["ttn"],SAMPLE["result"]["ttn"])
+        self.carrier.create_ttn.assert_not_called()
+        self.carrier.get_ttn_status.assert_not_called()
+        self.telegram.send_message.assert_not_called()
+
+    def test_archive_denies_inflight_and_uncertain_shipments(self):
+        self.login()
+        for index,state in enumerate(("collecting","processing","uncertain"),1):
+            job=copy.deepcopy(SAMPLE)
+            job.update(key=f"blocked-{index}",state=state)
+            self.seed(job)
+            d=self.get(f"/api/safar/orders/blocked-{index}").json["order"]
+            r=self.post(f"/api/safar/orders/blocked-{index}/archive",
+                        {"chat_id":USER,"archived":True,
+                         "expected_revision":d["revision"],"confirm_local_only":True})
+            self.assertEqual(r.status_code,409)
+            self.assertFalse(self.pipeline._job(job["key"]).get("app_archived_at"))
+        self.assertEqual(self.get("/api/safar/orders").json["counts"]["archived"],0)
+        self.carrier.create_ttn.assert_not_called()
 
     def test_tampered_expired_unsigned_and_wrong_actor_fail_closed(self):
         signed = sign()
