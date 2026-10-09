@@ -60,7 +60,8 @@ test('HTML references cache-busted assets, SW no longer holds v02 app shell', as
   expect(html).toContain('/safar/style.css?v=20261009-031');
   const sw=await (await page.request.get('/safar/sw.js')).text();
   expect(sw).toContain('safar-public-shell-v031-20261009');
-  expect(sw).not.toContain("const SHELL = ['/safar/app.js'");
+  expect(sw).toContain("const SHELL = ['/safar/app.js?v=20261009-031'");
+  expect(sw).not.toContain('safar-public-shell-v02-20261008');
 });
 test('SAFAR CONTROL shows a safe intake gate, returns tab and verified carrier radar', async ({ page }) => {
   await signIn(page);
