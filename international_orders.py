@@ -22,7 +22,7 @@ _COUNTRY_NAMES = {
     "GB": ("Великобритания", {"united kingdom", "great britain", "uk", "gb", "британия", "великобританія"}),
     "US": ("США", {"usa", "united states", "сша", "us"}),
 }
-_COUNTRY_LOOKUP = {alias.casefold(): code for code, (_, aliases) in _COUNTRY_NAMES.items()}
+_COUNTRY_LOOKUP = {alias.casefold(): code for code, (_, aliases) in _COUNTRY_NAMES.items() for alias in aliases}
 _PHONE = re.compile(r"(?<!\d)\+(?:\d[\s().-]*){8,15}(?!\d)")
 _EMAIL = re.compile(r"(?i)(?<![\w.+-])[\w.+-]+@[\w.-]+\.[a-z]{2,}(?!\w)")
 _BRANCH = re.compile(
