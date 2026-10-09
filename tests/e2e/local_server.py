@@ -168,6 +168,7 @@ app.register_blueprint(safar_app.create_safar_blueprint(
     telegram_token=TOKEN, webhook_secret=SECRET,
     allowed=lambda chat, user: chat == user == USER,
     get_pipeline=lambda: pipeline, telegram_bot=telegram,
+    admin_check=lambda user_id: user_id == USER,
 ))
 
 
