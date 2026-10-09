@@ -136,7 +136,45 @@ function analyticsPanel() {
 }
 function home() {
  const c = totalCounts();
- return `<div class="screen">${title('SAFAR / COMMAND CENTER',t('control'),t('overviewDesc'))}<div class="hero"><div class="hero-copy"><div class="eyebrow">SHIPPING. REFINED.</div><h2>${esc(t('heroTitle'))}<br><span>${esc(t('heroSecond'))}</span></h2><p>${esc(t('heroDesc'))}</p><button type="button" class="button-primary" data-tab="orders">${icon('orders')}${esc(t('openOrders'))}${icon('arrow')}</button>${button('open-intake',t('intake'),'orders',view.offline,'button-primary')}</div><div class="hero-art" aria-hidden="true">${icon('box')}<span>SAFAR / 02</span></div></div><div class="metrics">${stat(t('total'),view.lastSync ? c.all : '—',t('journal'),'orders',true)}${stat(t('attention'),view.lastSync ? c.attention : '—',t('unresolved'),'bell')}${stat(t('created'),view.lastSync ? c.created : '—',t('issued'),'truck')}${stat(t('processing'),view.lastSync ? c.processing : '—',t('queued'),'clock')}</div>${view.error ? errorPanel(view.error) : ''}<div class="grid-panels"><div class="panel"><div class="panel-header"><h3>${esc(t('recent'))}</h3><button type="button" class="section-more" data-tab="orders">${esc(t('seeAll'))}</button></div>${panelOrders(view.orders,5)}</div>${analyticsPanel()}</div></div>`;
+ const ru = language === 'ru';
+ const seen = Boolean(view.lastSync);
+ const intakeStatus = view.autoIntakeEnabled
+  ? (ru ? 'Доступен приём заказов в приложении' : 'Приймання замовлень у застосунку доступне')
+  : (ru ? 'Заказы принимаются через Telegram. Приём из приложения пока выключен.' : 'Замовлення приймаються через Telegram. Приймання із застосунку поки вимкнено.');
+ const lanes = [
+  {target:'orders',code:'01',symbol:'orders',head:ru?'ОЧЕРЕДЬ ЗАКАЗОВ':'ЧЕРГА ЗАМОВЛЕНЬ',caption:ru?'Проверка данных, фото и ошибок':'Перевірка даних, фото та помилок',value:seen?c.attention:'—'},
+  {target:'shipments',code:'02',symbol:'truck',head:ru?'КОНТРОЛЬ ТТН':'КОНТРОЛЬ ТТН',caption:ru?'Оформленные отправки и статусы НП':'Оформлені відправлення і статуси НП',value:seen?c.created:'—'},
+  {target:'returns',code:'03',symbol:'refresh',head:ru?'ВОЗВРАТЫ И СКЛАД':'ПОВЕРНЕННЯ І СКЛАД',caption:ru?'Обратные ТТН, приёмка, расходы':'Зворотні ТТН, приймання, витрати',value:Array.isArray(view.returnCases)?view.returnCases.length:'—'}
+ ];
+ return `<div class="screen control-dashboard">
+  ${title('SAFAR / CONTROL CENTER 03',t('control'),t('overviewDesc'))}
+  <div class="hero hero-v031">
+   <div class="hero-copy">
+    <div class="eyebrow hero-kicker"><span class="live-pip" aria-hidden="true"></span> CONTROL / RELEASE 03.1</div>
+    <h2>${esc(t('heroTitle'))}<br><span>${esc(t('heroSecond'))}</span></h2>
+    <p>${esc(t('heroDesc'))}</p>
+    <div class="hero-actions">
+      <button type="button" class="button-primary" data-tab="orders">${icon('orders')}${esc(t('openOrders'))}${icon('arrow')}</button>
+      ${button('open-intake',t('intake'),'box',view.offline,'button-quiet hero-secondary')}
+    </div>
+   </div>
+   <div class="hero-art hero-monogram" aria-hidden="true"><div class="hero-monogram-name">S<span>/</span>F</div><span>PRIVATE OPERATIONS<br>V 0.3.1</span></div>
+   <span class="hero-watermark" aria-hidden="true">03</span>
+  </div>
+  <div class="metrics metrics-v031">
+   ${stat(t('total'),seen?c.all:'—',t('journal'),'orders',true)}
+   ${stat(t('attention'),seen?c.attention:'—',t('unresolved'),'bell')}
+   ${stat(t('created'),seen?c.created:'—',t('issued'),'truck')}
+   ${stat(t('processing'),seen?c.processing:'—',t('queued'),'clock')}
+  </div>
+  <section class="control-operations" aria-label="${esc(ru?'Быстрый доступ':'Швидкий доступ')}">
+   <div class="operations-head"><div><div class="eyebrow">ACTION / COMMANDS</div><h2>${esc(ru?'Рабочий центр':'Робочий центр')}</h2></div><span class="release-pill">SAFAR CONTROL 03</span></div>
+   <div class="operations-grid">${lanes.map(l=>`<button type="button" class="operation-card" data-tab="${l.target}"><span class="operation-top"><span class="operation-code">${l.code} / ${l.head}</span>${icon(l.symbol)}</span><span class="operation-main"><span class="operation-value">${esc(l.value)}</span>${icon('arrow')}</span><span class="operation-desc">${l.caption}</span></button>`).join('')}</div>
+  </section>
+  <div class="intake-status" role="status"><span class="intake-state-dot ${view.autoIntakeEnabled?'enabled':''}" aria-hidden="true"></span><span>${esc(intakeStatus)}</span><button type="button" data-tab="settings">${esc(t('settings'))} ${icon('arrow')}</button></div>
+  ${view.error?errorPanel(view.error):''}
+  <div class="grid-panels"><div class="panel"><div class="panel-header"><h3>${esc(t('recent'))}</h3><button type="button" class="section-more" data-tab="orders">${esc(t('seeAll'))}</button></div>${panelOrders(view.orders,5)}</div>${analyticsPanel()}</div>
+ </div>`;
 }
 function filters() {
  const c = totalCounts();
@@ -206,11 +244,11 @@ function returnScreen() {
  return `<div class="screen">${title("REVERSE / LOGISTICS",t("returns"),t("returnHelp"))}${view.returnsError ? errorPanel(view.returnsError,"refresh-returns") : ""}<div class="panel"><div class="panel-header"><h3>${esc(t("returns"))}</h3><span class="panel-small">${cases.length} ${esc(t("records"))}</span>${button("refresh-returns",t("refresh"),"refresh",view.returnsLoading || view.offline)}</div>${view.returnsLoading ? skeleton(3) : cases.length ? `<div class="return-case-list">${cases.map(item).join("")}</div>` : empty(t("returnEmpty"),t("returnHelp"))}</div></div>`;
 }
 function settings() {
- return `<div class="screen">${title('SYSTEM / PREFERENCES',t('settings'),t('preferences'))}<div class="settings-grid"><div class="detail-block"><h3>${esc(t('session'))}</h3>${kv('SAFAR APP','v0.2 · PWA')}${kv(t('accessType'),esc(demo ? 'DEMO' : t('verified')))}${kv(t('scope'),esc(currentScope() || '—'))}${kv(t('expires'),demo ? '—' : esc(dateStr(view.expiresAt)))}${scopeControl()}${!demo ? `<div class="divider"></div>${button('logout',t('logout'),'logout')}` : ''}</div><div class="detail-block"><h3>${esc(t('locale'))}</h3><div class="language-options"><button type="button" class="filter-chip ${language === 'uk' ? 'active' : ''}" data-language="uk" aria-pressed="${language === 'uk'}" lang="uk">Українська</button><button type="button" class="filter-chip ${language === 'ru' ? 'active' : ''}" data-language="ru" aria-pressed="${language === 'ru'}" lang="ru">Русский</button></div><div class="divider"></div><h3>${esc(t('install'))}</h3><p class="muted-text">${esc(t('installHelp'))}</p>${view.installPrompt ? button('install',t('install'),'download',false,'button-primary') : ''}</div><div class="detail-block"><h3>${esc(t('diagnostics'))}</h3>${kv(t('status'),esc(connectionLabel()))}${kv(t('lastSync'),esc(dateStr(view.lastSync)))}${button('refresh',t('refresh'),'refresh',view.offline || view.listLoading)}</div><div class="detail-block privacy-card">${icon('shield')}<h3>PRIVATE BY DESIGN</h3><p class="muted-text">${esc(t('privacy'))}</p></div></div></div>`;
+ return `<div class="screen">${title('SYSTEM / PREFERENCES',t('settings'),t('preferences'))}<div class="settings-grid"><div class="detail-block"><h3>${esc(t('session'))}</h3>${kv('SAFAR CONTROL','v0.3.1 · PWA')}${kv(t('accessType'),esc(demo ? 'DEMO' : t('verified')))}${kv(t('scope'),esc(currentScope() || '—'))}${kv(t('expires'),demo ? '—' : esc(dateStr(view.expiresAt)))}${scopeControl()}${!demo ? `<div class="divider"></div>${button('logout',t('logout'),'logout')}` : ''}</div><div class="detail-block"><h3>${esc(t('locale'))}</h3><div class="language-options"><button type="button" class="filter-chip ${language === 'uk' ? 'active' : ''}" data-language="uk" aria-pressed="${language === 'uk'}" lang="uk">Українська</button><button type="button" class="filter-chip ${language === 'ru' ? 'active' : ''}" data-language="ru" aria-pressed="${language === 'ru'}" lang="ru">Русский</button></div><div class="divider"></div><h3>${esc(t('install'))}</h3><p class="muted-text">${esc(t('installHelp'))}</p>${view.installPrompt ? button('install',t('install'),'download',false,'button-primary') : ''}</div><div class="detail-block"><h3>${esc(t('diagnostics'))}</h3>${kv(t('status'),esc(connectionLabel()))}${kv(t('lastSync'),esc(dateStr(view.lastSync)))}${button('refresh',t('refresh'),'refresh',view.offline || view.listLoading)}</div><div class="detail-block privacy-card">${icon('shield')}<h3>PRIVATE BY DESIGN</h3><p class="muted-text">${esc(t('privacy'))}</p></div></div></div>`;
 }
 function locked() {
  const pair = view.pair;
- return `<main class="locked" id="mainContent"><div class="locked-card"><div class="locked-symbol">SAFAR</div><div class="eyebrow">PRIVATE SHIPPING OS</div><div class="lock-badge">${icon('shield')}</div><h1>${esc(t(pair ? 'pairing' : 'privateSpace'))}</h1><p>${esc(t(pair ? 'pairInstruction' : 'loginHelp'))}</p>${view.loading ? '<div class="loading-bar"><span></span></div>' : ''}${pair ? `<div class="pairing-code"><code>/app ${esc(pair.code)}</code></div><div class="pairing-meta">${esc(t('pairExpires'))}: ${esc(dateStr(pair.expires_at))}</div><div class="pairing-wait" role="status">${icon('clock')}${esc(t('pairWaiting'))}</div>` : ''}${view.offline ? `<div class="offline-banner" role="status">${icon('wifi')}<span>${esc(t('offline'))}. ${esc(t('privacy'))}</span></div>` : ''}${view.offline ? button('reconnect',t('refresh'),'wifi',view.loading,'button-quiet') : ''}${view.pairError ? `<div class="form-error" role="alert">${esc(view.pairError)}</div>` : ''}<div class="locked-actions">${button(pair ? 'pair-check' : 'pair-start',t(view.pairBusy ? 'loading' : pair ? 'pairCheck' : 'pair'),'lock',view.loading || view.pairBusy || view.offline,'button-primary')}${pair ? button('pair-cancel',t('cancel'),'close') : ''}<a href="/safar/?demo=1" class="button-quiet demo-link">${esc(t('demoButton'))}${icon('arrow')}</a></div><div class="locked-footer">${esc(t('secured'))}</div><div class="language-options"><button type="button" data-language="uk" aria-pressed="${language === 'uk'}">UK</button><span>/</span><button type="button" data-language="ru" aria-pressed="${language === 'ru'}">RU</button></div></div></main>`;
+ return `<main class="locked" id="mainContent"><div class="locked-card"><div class="locked-symbol">SAFAR</div><div class="eyebrow">SAFAR CONTROL / RELEASE 03.1</div><div class="lock-badge">${icon('shield')}</div><h1>${esc(t(pair ? 'pairing' : 'privateSpace'))}</h1><p>${esc(t(pair ? 'pairInstruction' : 'loginHelp'))}</p>${view.loading ? '<div class="loading-bar"><span></span></div>' : ''}${pair ? `<div class="pairing-code"><code>/app ${esc(pair.code)}</code></div><div class="pairing-meta">${esc(t('pairExpires'))}: ${esc(dateStr(pair.expires_at))}</div><div class="pairing-wait" role="status">${icon('clock')}${esc(t('pairWaiting'))}</div>` : ''}${view.offline ? `<div class="offline-banner" role="status">${icon('wifi')}<span>${esc(t('offline'))}. ${esc(t('privacy'))}</span></div>` : ''}${view.offline ? button('reconnect',t('refresh'),'wifi',view.loading,'button-quiet') : ''}${view.pairError ? `<div class="form-error" role="alert">${esc(view.pairError)}</div>` : ''}<div class="locked-actions">${button(pair ? 'pair-check' : 'pair-start',t(view.pairBusy ? 'loading' : pair ? 'pairCheck' : 'pair'),'lock',view.loading || view.pairBusy || view.offline,'button-primary')}${pair ? button('pair-cancel',t('cancel'),'close') : ''}<a href="/safar/?demo=1" class="button-quiet demo-link">${esc(t('demoButton'))}${icon('arrow')}</a></div><div class="locked-footer">SAFAR CONTROL 03.1 · ${esc(t('secured'))}</div><div class="language-options"><button type="button" data-language="uk" aria-pressed="${language === 'uk'}">UK</button><span>/</span><button type="button" data-language="ru" aria-pressed="${language === 'ru'}">RU</button></div></div></main>`;
 }
 function render(options={}) {
  const focused = document.activeElement;
@@ -222,7 +260,7 @@ function render(options={}) {
  if (!view.authed && !demo) app.innerHTML = locked();
  else {
  const content = view.selected ? detail() : view.tab === 'home' ? home() : view.tab === 'orders' ? orderList() : view.tab === 'shipments' ? orderList(true) : view.tab === 'returns' ? returnScreen() : view.tab === 'senders' ? senders() : settings();
- app.innerHTML = `${sidebar()}<main class="workspace" id="mainContent">${topbar()}${demo ? `<div class="demo-banner"><strong>DEMO</strong><span>${esc(t('demoNotice'))}</span></div>` : ''}${view.offline ? `<div id="offlineBanner" class="offline-banner" role="status">${icon('wifi')}<div><strong>${esc(t('offline'))}</strong><span>${esc(t('offlineHint'))}</span></div></div>` : ''}${view.scopes.length > 1 && view.tab !== 'settings' && !view.selected ? `<div class="scope-strip">${scopeControl()}</div>` : ''}${content}<footer class="footer-note"><span>SAFAR · SHIPPING OPERATIONS OS</span><span>${esc(t('lastSync'))} ${esc(dateStr(view.lastSync))}</span></footer></main>${bottom()}`;
+ app.innerHTML = `${sidebar()}<main class="workspace" id="mainContent">${topbar()}${demo ? `<div class="demo-banner"><strong>DEMO</strong><span>${esc(t('demoNotice'))}</span></div>` : ''}${view.offline ? `<div id="offlineBanner" class="offline-banner" role="status">${icon('wifi')}<div><strong>${esc(t('offline'))}</strong><span>${esc(t('offlineHint'))}</span></div></div>` : ''}${view.scopes.length > 1 && view.tab !== 'settings' && !view.selected ? `<div class="scope-strip">${scopeControl()}</div>` : ''}${content}<footer class="footer-note"><span>SAFAR / CONTROL 03.1</span><span>${esc(t('lastSync'))} ${esc(dateStr(view.lastSync))}</span></footer></main>${bottom()}`;
  }
  if (preserve) { const target = document.getElementById(focused.id); if (target) { target.focus({preventScroll:true}); if (typeof start === 'number') { try { target.setSelectionRange(start,end); } catch (_) {} } } }
 }
