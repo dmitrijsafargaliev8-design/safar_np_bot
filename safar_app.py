@@ -41,12 +41,13 @@ def _photo_fail(code):
     abort(502)
 
 MAX_PHOTO_BYTES = 6 * 1024 * 1024
-STATES = {"collecting", "processing", "invalid", "failed", "uncertain", "created", "deleted"}
+STATES = {"collecting", "processing", "invalid", "failed", "uncertain", "created", "deleted", "international_review"}
 EDIT_FIELDS = {"full_name", "phone", "city", "warehouse", "cost", "cod_amount", "weight", "description"}
 SAFE_ERRORS = {
     "invalid": "Перевірте обов’язкові поля замовлення.",
     "failed": "Обробку зупинено. Перевірте замовлення у Telegram.",
     "uncertain": "Результат створення ТТН не підтверджено. Повторне створення заблоковано.",
+    "international_review": "Міжнародне замовлення збережено; ТТН не створено. Потрібна перевірка.",
 }
 
 
@@ -122,6 +123,12 @@ def public_order(job, *, include_detail=False):
         "city": _text(order.get("city"), 120),
         "warehouse": _text(order.get("warehouse"), 40),
         "area": _text(order.get("area"), 90),
+        "shipment_scope": "international" if order.get("shipment_scope") == "international" else "domestic",
+        "country": _text(order.get("country"), 100),
+        "country_code": _text(order.get("country_code"), 2),
+        "postal_code": _text(order.get("postal_code"), 24),
+        "currency": _text(order.get("currency"), 5),
+        "international_missing_count": len(job.get("international_missing") or []),
         "declared": _number(order.get("cost")),
         "cod": _number(order.get("cod_amount"), 0),
         "ttn": _ttn(outcome.get("ttn")),
@@ -154,12 +161,15 @@ def public_order(job, *, include_detail=False):
             "phone": _text(order.get("phone"), 32),
             "weight": _number(order.get("weight")),
             "description": _text(order.get("description"), 180),
+            "branch_address": _text(order.get("branch_address"), 180),
+            "street_address": _text(order.get("street_address"), 180),
+            "international_missing": [_text(x, 80) for x in (job.get("international_missing") or [])[:20]],
             "delivery_type": _text(order.get("delivery_point_type"), 32),
             "fields": _fields(order),
             "pending_order": proposal,
             "correction_stale": bool(job.get("app_correction_stale")),
             "correction_version": _number(job.get("correction_version"), 0),
-            "can_edit": job.get("state") not in {"processing", "uncertain"},
+            "can_edit": job.get("state") not in {"processing", "uncertain", "international_review"},
             "revision": _text(job.get("revision"), 64),
             "source_text": "\n\n".join(original)[:16000],
             "source_url": source_url,
