@@ -18,6 +18,7 @@ from telebot import types
 from np_client import NovaPoshtaError, NovaPoshtaTemporaryError, NovaPoshtaUncertainError
 from order_journal import OrderJournal
 from order_edits import parse_field_patch, apply_field_patch, patch_labels
+from international_orders import international_missing, is_international_supplement
 
 logger = logging.getLogger(__name__)
 
@@ -247,7 +248,16 @@ class OrderPipeline:
             if linked and (message.get("text") or message.get("caption")) and not retry:
                 correction = message.get("text") or message.get("caption")
                 patch = parse_field_patch(correction)
-                if patch is not None:
+                if (job.get("order") or {}).get("shipment_scope") == "international" and is_international_supplement(correction):
+                    previous = job.get("override") or "\n".join(
+                        dict.fromkeys((m.get("text") or m.get("caption") or "").strip()
+                                      for m in job["messages"]
+                                      if (m.get("text") or m.get("caption") or "").strip())
+                    )
+                    job["override"] = previous.rstrip() + "\n" + correction
+                    job.pop("pending_edits", None)
+                    job.pop("pending_base", None)
+                elif patch is not None:
                     if job["state"] in {"processing", "uncertain"}:
                         raise ValueError("Создание ТТН не подтверждено. Исправления временно заблокированы.")
                     if job.get("order") is not None:
@@ -425,6 +435,18 @@ class OrderPipeline:
         except (ValueError, NovaPoshtaError) as exc:
             job.update(state="invalid", error=str(exc), due=self.clock(), notified=False)
             return
+        # A foreign shipment is an operator-review draft. Never pass it to the
+        # domestic v2 Nova Poshta client or create a carrier receipt.
+        if order.get("shipment_scope") == "international":
+            if job.get("result"):
+                job.update(state="uncertain",
+                           error="Существующая ТТН требует проверки. Международная накладная не создавалась.",
+                           due=self.clock(), notified=False)
+                return
+            job.update(order=order, result=None, state="international_review",
+                       error="", due=self.clock(), notified=False,
+                       international_missing=international_missing(order))
+            return
         job["order"] = order
         job.pop("duplicate", None)
         job.pop("replaced_ttn", None)
@@ -544,15 +566,35 @@ class OrderPipeline:
         if job.get("thread_id"):
             kwargs["message_thread_id"] = job["thread_id"]
         sent = []
-        if job["state"] == "created":
-            from order_card import build_card_keyboard, format_order_card
-            result = job["result"]
-            text = format_order_card(
-                job["order"], result, sum(a["kind"] == "photo" for a in media),
-                duplicate=job.get("duplicate", False), replaced_ttn=job.get("replaced_ttn"),
-                notice=job.get("notice"),
-            )
-            markup = build_card_keyboard(result["ttn"])
+        if job["state"] in {"created", "international_review"}:
+            if job["state"] == "created":
+                from order_card import build_card_keyboard, format_order_card
+                result = job["result"]
+                text = format_order_card(
+                    job["order"], result, sum(a["kind"] == "photo" for a in media),
+                    duplicate=job.get("duplicate", False), replaced_ttn=job.get("replaced_ttn"),
+                    notice=job.get("notice"),
+                )
+                markup = build_card_keyboard(result["ttn"])
+            else:
+                order = job["order"]
+                missing = international_missing(order)
+                destination = f"{order.get('country', '')} · {order.get('city') or 'город не указан'}"
+                if order.get("warehouse"):
+                    destination += f" · Nova Post №{order['warehouse']}"
+                text = (
+                    "🌍 SAFAR / МЕЖДУНАРОДНЫЙ ЗАКАЗ\n"
+                    "⏳ СОХРАНЁН · ОЖИДАЕТ ПРОВЕРКИ\n"
+                    f"👤 {order.get('full_name') or 'ФИО не указано'}\n"
+                    f"📍 {destination}\n"
+                    f"📮 {order.get('postal_code') or 'индекс не указан'}\n"
+                    f"📞 {order.get('phone') or 'номер не указан'}\n"
+                    f"🖼 Фото: {sum(a['kind'] == 'photo' for a in media)}\n"
+                    + ("⚠️ Дополнить: " + ", ".join(missing) + "\n" if missing else "✅ Данные собраны; проверь таможенные документы.\n")
+                    + "🚫 Международная ТТН ещё НЕ создана.\n"
+                    + "Ответь недостающими полями (например, Оценка: 100 EUR). Фото сохранятся."
+                )
+                markup = None
             if media:
                 # Telegram does not permit inline keyboards on sendMediaGroup:
                 # attach the 2x2 controls to a lead photo, then send any extras.
@@ -752,7 +794,7 @@ class OrderPipeline:
         with self.lock:
             rows = self.db.execute(
                 "SELECT body FROM jobs WHERE chat_id=? AND owner_id=? "
-                "AND state IN ('collecting','processing','invalid','failed','uncertain') "
+                "AND state IN ('collecting','processing','invalid','failed','uncertain','international_review') "
                 "ORDER BY updated DESC LIMIT ?",
                 (chat_id, owner_id, limit),
             ).fetchall()
@@ -771,7 +813,7 @@ class OrderPipeline:
                        date_from=None, date_to=None, has_ttn=None, archived="active"):
         """Apply every filter in SQL before pagination and scope all queries."""
         if status not in {"", "all", "attention", "collecting", "processing", "invalid",
-                          "failed", "uncertain", "created", "deleted"}:
+                          "failed", "uncertain", "created", "deleted", "international_review"}:
             raise ValueError("Invalid order status")
         if archived not in {"active", "archived", "all"}:
             raise ValueError("Invalid archive filter")
@@ -790,7 +832,7 @@ class OrderPipeline:
         if archived != "all":
             clauses.append(self._order_value("app_archived_at") + (" IS NOT NULL" if archived == "archived" else " IS NULL"))
         if status == "attention":
-            clauses.append("state IN ('invalid','failed','uncertain')")
+            clauses.append("state IN ('invalid','failed','uncertain','international_review')")
         elif status and status != "all":
             clauses.append("state=?")
             values.append(status)
