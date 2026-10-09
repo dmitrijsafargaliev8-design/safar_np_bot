@@ -1,7 +1,7 @@
 /* Public shell only. Private APIs, media and mutations bypass CacheStorage. */
 'use strict';
 const CACHE = 'safar-public-shell-v031-20261009';
-const SHELL = ['/safar/icon.svg',
+const SHELL = ['/safar/app.js?v=20261009-031', '/safar/style.css?v=20261009-031', '/safar/icon.svg',
   '/safar/manifest.webmanifest', '/safar/offline.html', '/safar/icon-192.png',
   '/safar/icon-512.png', '/safar/icon-maskable-512.png'];
 self.addEventListener('install', event => {
@@ -23,8 +23,9 @@ self.addEventListener('fetch', event => {
     }));
     return;
   }
-  // Versioned JS/CSS must always use the network/HTTP cache, never a stale SW shell.
-  if (url.search || !SHELL.includes(url.pathname)) return;
+  // Only the exact current-version public shell may be cached. Private API,
+  // media and all other query URLs stay out of CacheStorage.
+  if (!SHELL.includes(url.pathname + url.search)) return;
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
     try {
