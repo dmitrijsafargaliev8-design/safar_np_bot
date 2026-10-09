@@ -113,6 +113,8 @@ def public_order(job, *, include_detail=False):
     base = {
         "id": key,
         "source": "app" if job.get("source") == "app" else "telegram",
+        "archived": bool(job.get("app_archived_at")),
+        "can_archive": job.get("state") not in {"collecting","processing","uncertain"},
         "state": job.get("state") if job.get("state") in STATES else "invalid",
         "created_at": created,
         "updated_at": _number(job.get("updated_at"), 0),
@@ -165,6 +167,7 @@ def public_order(job, *, include_detail=False):
             "notice": ("Зміни збережені як пропозиція. Чинна ТТН не змінена."
                        if proposal else ""),
             "history": [], "receipts": [],
+            "archive_events": [{"action": e.get("action"), "at": e.get("at")} for e in (job.get("app_archive_events") or [])[-20:] if isinstance(e, dict)],
             "can_print": bool(os.getenv("SAFAR_NP_PDF_PRINT") == "1" and _ttn(outcome.get("ttn"))),
         })
     return base
@@ -187,8 +190,9 @@ def _receipt(value, *, state, sender_profile="default", deleted_at=None):
 
 
 def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipeline,
-                           telegram_bot, sender_registry=None):
+                           telegram_bot, sender_registry=None, admin_check=None):
     bp = Blueprint("safar_app", __name__)
+    admin_check = admin_check if callable(admin_check) else (lambda _user_id: False)
     auth = AuthService(telegram_token=telegram_token, webhook_secret=webhook_secret,
                        allowed=allowed, get_pipeline=get_pipeline)
     login_limit = RateLimiter(20, 60)
@@ -350,6 +354,7 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
         response = make_response(jsonify(ok=True, user_id=session.user_id,
                                          csrf_token=session.csrf_token, expires_at=session.expires_at,
                                          chat_id=default_scope(session.user_id),
+                                         is_admin=bool(admin_check(session.user_id)),
                                          auto_intake_enabled=os.getenv('SAFAR_APP_AUTO_CREATE') == '1',
                                          media_intake_enabled=os.getenv('SAFAR_APP_MEDIA_INTAKE') == '1' and os.getenv('SAFAR_APP_AUTO_CREATE') == '1',
                                          ocr_enabled=os.getenv('SAFAR_OCR_ENABLED') == '1'))
@@ -689,7 +694,8 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
             filters = {"status": request.args.get("status", ""), "search": request.args.get("search", ""),
                        "sender_profile": request.args.get("sender_profile", ""),
                        "date_from": date_from, "date_to": date_to,
-                       "has_ttn": None if has_ttn is None else has_ttn == "true"}
+                       "has_ttn": None if has_ttn is None else has_ttn == "true",
+                       "archived": request.args.get("archived", "active") }
             jobs = pipe.list_orders_page(chat, session.user_id, limit=limit, offset=offset,
                                          sort=request.args.get("sort", "updated_desc"), **filters)
             total = pipe.order_page_count(chat, session.user_id, **filters)
@@ -707,6 +713,34 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
         session = current_session()
         job = safe_job(session, current_scope(session), key)
         return jsonify(order=detail_result(job))
+
+    @bp.post("/api/safar/orders/<path:key>/archive")
+    def archive_order(key):
+        """Owner-admin hides/recovers local journal record, never NP waybill."""
+        session = current_session()
+        require_same_origin(request)
+        require_csrf(request, session)
+        if not admin_check(session.user_id):
+            abort(403)
+        body = json_body()
+        chat = current_scope(session, body)
+        if type(body.get("archived")) is not bool or body.get("confirm_local_only") is not True:
+            abort(422)
+        try:
+            result = pipeline().set_order_archived(
+                chat, session.user_id, key, body["archived"],
+                expected_revision=body.get("expected_revision"),
+            )
+        except OrderCorrectionConflict:
+            abort(409)
+        except (ValueError, TypeError):
+            abort(422)
+        if result is None:
+            abort(404)
+        return no_store(jsonify(order=detail_result(result["job"]),
+                               archived=result["job"].get("app_archived_at") is not None,
+                               changed=result["changed"], ttn_modified=False,
+                               carrier_called=False))
 
     @bp.post("/api/safar/orders/<path:key>/corrections")
     def corrections(key):
