@@ -40,6 +40,28 @@ async function screenshot(page, filename) {
   await page.screenshot({ path: path.join(screenshots, filename), fullPage: false });
 }
 
+test('CONTROL 03.1 is unmistakable after login and navigation', async ({ page }) => {
+  await signIn(page);
+  await expect(page.locator('.hero-v031')).toContainText('RELEASE 03.1');
+  await expect(page.locator('.control-operations')).toBeVisible();
+  await expect(page.locator('.operation-card')).toHaveCount(3);
+  await expect(page.locator('.intake-status')).toContainText('Telegram');
+  await page.locator('.operation-card[data-tab="returns"]').click();
+  await expect(page.locator('main.workspace h1')).toContainText('Повернення');
+  await tab(page, 'settings');
+  await expect(page.locator('main.workspace')).toContainText('v0.3.1');
+});
+test('HTML references cache-busted assets, SW no longer holds v02 app shell', async ({ page }) => {
+  const r=await page.request.get('/safar/');
+  expect(r.ok()).toBeTruthy();
+  expect(r.headers()['cache-control']).toContain('no-store');
+  const html=await r.text();
+  expect(html).toContain('/safar/app.js?v=20261009-031');
+  expect(html).toContain('/safar/style.css?v=20261009-031');
+  const sw=await (await page.request.get('/safar/sw.js')).text();
+  expect(sw).toContain('safar-public-shell-v031-20261009');
+  expect(sw).not.toContain("const SHELL = ['/safar/app.js'");
+});
 test('SAFAR CONTROL shows a safe intake gate, returns tab and verified carrier radar', async ({ page }) => {
   await signIn(page);
   await page.locator('[data-action="open-intake"]').first().click();
