@@ -63,6 +63,35 @@ test('HTML references cache-busted assets, SW no longer holds v02 app shell', as
   expect(sw).toContain("const SHELL = ['/safar/app.js', '/safar/style.css'");
   expect(sw).not.toContain('safar-public-shell-v02-20261008');
 });
+test('admin archives and restores locally without deleting the NP waybill', async ({ page }) => {
+  await signIn(page);
+  await tab(page,'orders');
+  await expect(page.locator('.archive-switch')).toBeVisible();
+  await page.locator('.order-row').first().click();
+  const ttn=await page.locator('.ttn-large').innerText();
+  await expect(page.locator('[data-action="open-archive"]')).toBeVisible();
+  await page.locator('[data-action="open-archive"]').click();
+  const dialog=page.locator('#actionDialog');
+  await expect(dialog).toContainText('у Новій пошті не видаляється');
+  await dialog.locator('#archiveConfirmation').check();
+  await dialog.locator('#archiveOrderForm button[type="submit"]').click();
+  await expect(page.locator('.archive-status')).toContainText('В архіві');
+  await expect(page.locator('.ttn-large')).toHaveText(ttn);
+  await page.locator('[data-action="back"]').click();
+  await page.locator('[data-action="show-archive"]').click();
+  await expect(page.locator('.archive-disclaimer')).toBeVisible();
+  await expect(page.locator('.order-row').first()).toBeVisible();
+  await page.locator('.order-row').first().click();
+  await page.locator('[data-action="open-archive"]').click();
+  await dialog.locator('#archiveConfirmation').check();
+  await dialog.locator('#archiveOrderForm button[type="submit"]').click();
+  await expect(page.locator('.archive-status')).toHaveCount(0);
+  await expect(page.locator('.ttn-large')).toHaveText(ttn);
+  await page.locator('[data-action="back"]').click();
+  await page.locator('[data-action="show-active"]').click();
+  await expect(page.locator('.order-row').first()).toBeVisible();
+});
+
 test('SAFAR CONTROL shows a safe intake gate, returns tab and verified carrier radar', async ({ page }) => {
   await signIn(page);
   await page.locator('[data-action="open-intake"]').first().click();
