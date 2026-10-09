@@ -395,6 +395,7 @@ def create_safar_blueprint(*, telegram_token, webhook_secret, allowed, get_pipel
         session = current_session()
         return jsonify(ok=True, user_id=session.user_id, csrf_token=session.csrf_token,
                        expires_at=session.expires_at, chat_id=default_scope(session.user_id),
+                       is_admin=bool(admin_check(session.user_id)),
                        auto_intake_enabled=os.getenv("SAFAR_APP_AUTO_CREATE") == "1",
                        media_intake_enabled=os.getenv("SAFAR_APP_MEDIA_INTAKE") == "1" and os.getenv("SAFAR_APP_AUTO_CREATE") == "1",
                        ocr_enabled=os.getenv("SAFAR_OCR_ENABLED") == "1")
