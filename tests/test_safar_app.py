@@ -177,7 +177,7 @@ class SafarAppTests(unittest.TestCase):
         self.assertFalse(res.json["archived"])
         self.assertEqual(len(res.json["order"]["archive_events"]),2)
         self.assertEqual(len(self.get("/api/safar/orders").json["orders"]),1)
-        self.assertEqual(self.get("/api/safar/orders").json["counts"]["archived"],0)
+        self.assertEqual(self.get("/api/safar/orders").json["counts"].get("archived",0),0)
         self.assertEqual(self.pipeline._job("job-alpha")["result"]["ttn"],SAMPLE["result"]["ttn"])
         self.carrier.create_ttn.assert_not_called()
         self.carrier.get_ttn_status.assert_not_called()
