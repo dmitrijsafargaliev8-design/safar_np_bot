@@ -15,6 +15,7 @@ import telebot
 
 from np_client import NovaPoshtaClient, NovaPoshtaError, normalize_phone
 from order_pipeline import OrderCorrectionConflict
+from international_orders import detect_country, parse_international_order
 
 load_dotenv()
 
@@ -292,6 +293,8 @@ def parse_order(text: str):
     raw_text = (text or "").replace("\u00a0", " ").replace("\u200b", "").strip()
     if not raw_text:
         raise ValueError("В сообщении нет текста заказа.")
+    if detect_country(raw_text):
+        return parse_international_order(raw_text)
 
     data = {}
     lines = _clean_lines(raw_text)
@@ -628,6 +631,7 @@ BOT_COMMANDS = (
     ("app", "Открыть SAFAR APP для заказов и ТТН"),
     ("menu", "Все команды и быстрые подсказки"),
     ("help", "Как переслать заказ с фото"),
+    ("international", "Международные отправки и данные для таможни"),
     ("example", "Образец заполненного заказа"),
     ("orders", "Мои последние 10 заказов"),
     ("queue", "Заказы в очереди и с ошибками"),
@@ -664,7 +668,7 @@ HELP_TEXT = (
     "/sender — текущий профиль; /sender ID — переключить для будущих заказов.\n"
     "/sendercheck — безопасная проверка ФОП/кабинета НП без отправки.\n"
     "/senderaccess — посмотреть отправителей, доступных имеющемуся ключу, без ТТН.\n"
-    "/example — образец заказа.\n/menu — все команды."
+    "/example — образец заказа.\n/international — международные заказы.\n/menu — все команды."
 )
 _telegram_commands = []
 
@@ -737,6 +741,22 @@ def register_command_handlers(telegram_bot):
         if _is_allowed(message):
             telegram_bot.reply_to(message, HELP_TEXT)
 
+    @telegram_bot.message_handler(commands=["international", "intl"])
+    def international_handler(message):
+        if not _is_allowed(message):
+            return
+        telegram_bot.reply_to(
+            message,
+            "🌍 МЕЖДУНАРОДНЫЕ ЗАКАЗЫ SAFAR\n"
+            "Перешли заказ с фото. Страну укажи отдельной строкой (например, Polska).\n"
+            "ФИО, телефон +код страны, город, индекс, номер Nova Post или адрес, email.\n"
+            "Для оформления: Оценка: 100 EUR; Вес: 1.2 кг; Товар: кроссовки; "
+            "Количество: 1; Страна происхождения: Украина.\n\n"
+            "Бот сохранит фото и данные в разделе международной проверки. "
+            "Международная накладная через Nova Post API пока не оформляется автоматически. "
+            "Проверь таможенные документы и требования страны назначения."
+        )
+
     @telegram_bot.message_handler(commands=["example"])
     def example_handler(message):
         if _is_allowed(message):
@@ -801,7 +821,7 @@ def register_command_handlers(telegram_bot):
         jobs = pipeline.list_orders(message.chat.id, message.from_user.id)
         labels = {"collecting": "в очереди", "processing": "обрабатывается", "created": "готово",
                   "invalid": "нужны данные", "failed": "ошибка", "uncertain": "проверить в НП",
-                  "deleted": "удалена в НП"}
+                  "deleted": "удалена в НП", "international_review": "🌍 международная проверка"}
         lines = []
         for job in jobs:
             order = job.get("order") or {}
@@ -823,7 +843,7 @@ def register_command_handlers(telegram_bot):
             return
         names = {"collecting": "ожидает", "processing": "обрабатывается",
                  "invalid": "нужны данные", "failed": "ошибка",
-                 "uncertain": "проверить в НП"}
+                 "uncertain": "проверить в НП", "international_review": "🌍 международный / проверка"}
         lines = ["📦 ОЧЕРЕДЬ И ПРОБЛЕМНЫЕ ЗАКАЗЫ"]
         for job in jobs:
             order = job.get("order") or {}
@@ -843,7 +863,7 @@ def register_command_handlers(telegram_bot):
             return
         counts = pipeline.order_state_counts(message.chat.id, message.from_user.id)
         pending = sum(counts.get(k, 0) for k in ("collecting", "processing"))
-        problems = sum(counts.get(k, 0) for k in ("invalid", "failed", "uncertain"))
+        problems = sum(counts.get(k, 0) for k in ("invalid", "failed", "uncertain", "international_review"))
         telegram_bot.reply_to(
             message,
             "📊 SAFAR — СТАТИСТИКА ЗАКАЗОВ\n"
@@ -851,6 +871,7 @@ def register_command_handlers(telegram_bot):
             f"Созданные: {counts.get('created', 0)}\n"
             f"В обработке: {pending}\n"
             f"Требуют внимания: {problems}\n"
+            f"Международные (на проверке): {counts.get('international_review', 0)}\n"
             f"Удалённые ТТН: {counts.get('deleted', 0)}\n\n"
             "Показаны записи текущего пользователя и чата, не финансовая выручка.",
         )
